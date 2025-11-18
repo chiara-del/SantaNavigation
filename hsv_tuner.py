@@ -1,9 +1,14 @@
 import cv2
 import numpy as np
 
+# THIS CODE IS USEFULL TO DETERMINE THE OPTIMAL VALUES FOR THE 
+# LOWER_HSV AND UPPER_HSV THRESHOLDS
+# IMPORTANT: run it before running the main.py so that you can set
+# the thresholds correctly
+
 # --- 1. CONFIGURATION ---
 USE_WEBCAM = True  # Set to True to use live webcam, False for static image
-CAMERA_INDEX = 1    # Your camera index
+CAMERA_INDEX = 0    # Your camera index
 IMAGE_PATH = "my_arena_image.jpg" # Path to your test image
 
 # A "dummy" function that does nothing.

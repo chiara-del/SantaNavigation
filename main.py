@@ -6,13 +6,13 @@ import sys
 # --- 1. CONFIGURATION ---
 
 # Camera setting
-CAMERA_INDEX = 1     #(0=personal webcam, 1=USB webcam)
+CAMERA_INDEX =  1    #(0=personal webcam, 1=USB webcam)
 CAMERA_WIDTH = 1920
 CAMERA_HEIGHT = 1080
 
 # Map settings
-MAP_WIDTH = 800
-MAP_HEIGHT = 600
+MAP_WIDTH = 700
+MAP_HEIGHT = 500
 MATRIX_FILE_PATH = "my_matrix.npy"  # File to save/load calibration
 
 # Marker IDs
@@ -20,16 +20,17 @@ THYMIO_MARKER_ID = 0  # ID of the ArUco marker on your Thymio
 GOAL_MARKER_ID = 1    # ID of the ArUco marker for the goal
 
 # Choose your method: "HSV" or "GRAY"
-OBSTACLE_METHOD = "HSV" 
+OBSTACLE_METHOD = "GRAY" 
 
 # HSV settings (used if OBSTACLE_METHOD == "HSV")
-LOWER_WHITE_HSV = np.array([0, 0, 50])   
-UPPER_WHITE_HSV = np.array([180, 25, 255])
+LOWER_WHITE_HSV = np.array([0, 0, 8])
+UPPER_WHITE_HSV = np.array([179, 16, 255])
 
 # Grayscale settings (used if OBSTACLE_METHOD == "GRAY")
 GRAYSCALE_THRESHOLD_VALUE = 150   
 
 MIN_OBSTACLE_AREA = 200  # Minimum pixel area
+ROBOTIC_RADIUS = 109     # The radius of Thymio in pixels
 
 
 def main():
@@ -80,16 +81,17 @@ def main():
             
             if OBSTACLE_METHOD == "HSV":
                 obstacle_contours, obstacle_mask = vu.detect_obstacles_hsv(
-                    top_down_map, LOWER_WHITE_HSV, UPPER_WHITE_HSV, MIN_OBSTACLE_AREA
+                    top_down_map, LOWER_WHITE_HSV, UPPER_WHITE_HSV, MIN_OBSTACLE_AREA, ROBOTIC_RADIUS
                 )
             elif OBSTACLE_METHOD == "GRAY":
                 obstacle_contours, obstacle_mask = vu.detect_obstacles_grayscale(
-                    top_down_map, GRAYSCALE_THRESHOLD_VALUE, MIN_OBSTACLE_AREA
+                    top_down_map, GRAYSCALE_THRESHOLD_VALUE, MIN_OBSTACLE_AREA, ROBOTIC_RADIUS
                 )
             else:
                 print(f"Error: Unknown OBSTACLE_METHOD: {OBSTACLE_METHOD}")
                 obstacle_contours = []
                 obstacle_mask = np.zeros((MAP_HEIGHT, MAP_WIDTH), dtype=np.uint8)
+   
 
             # 5. TRANSFORM ArUco coordinates into Map coordinates
             thymio_pose = None

@@ -16,7 +16,7 @@ except AttributeError:
 
 def setup_camera(camera_index, width, height):
     """Initializes and configures the webcam."""
-    cap = cv2.VideoCapture(camera_index)
+    cap = cv2.VideoCapture(camera_index, cv2.CAP_DSHOW)
     if not cap.isOpened():
         print(f"Error: Could not open webcam index {camera_index}.")
         return None
@@ -38,7 +38,7 @@ def load_transform_matrix(path):
 
 def run_calibration_wizard(cap, map_width, map_height, matrix_file_path):
     """
-    Guides the user through the (Step 1) perspective calibration.
+    Guides the user through perspective calibration.
     Takes a snapshot, gets 4 clicks, calculates, saves, and returns the matrix.
     """
     
@@ -149,44 +149,155 @@ def detect_aruco_markers(frame):
     
     return poses
 
-def detect_obstacles_hsv(frame, lower_hsv, upper_hsv, min_area):
+def mask_to_polygons(
+    mask,
+    blur_ksize=5,
+    morph_kernel_size=5,
+    morph_iters=2,
+    epsilon_factor=0.02,
+    min_area=100
+):
     """
-    Detects obstacle contours using HSV color segmentation.
-    Returns: (list_of_valid_contours, binary_mask_for_debugging)
+    Convert a binary mask (white shapes on black) into simplified polygons.
+
+    Parameters
+    ----------
+    mask : np.ndarray
+        Binary image (uint8). Shapes should be white (255), background black (0).
+        Can also be grayscale; we'll threshold it.
+    blur_ksize : int
+        Kernel size for Gaussian blur (must be odd). 0 or 1 to disable.
+    morph_kernel_size : int
+        Kernel size for morphological operations (closing + opening).
+    morph_iters : int
+        Number of iterations for morphology.
+    epsilon_factor : float
+        Simplification factor for approxPolyDP. Higher = fewer vertices.
+        Typical range: 0.01–0.05.
+    min_area : float
+        Minimum contour area to keep (to filter tiny noise).
+
+    Returns
+    -------
+    polygons : list of np.ndarray
+        Each element is an array of shape (N, 2) with (x, y) vertex coordinates.
+        Example: [array([[x1, y1], [x2, y2], ...]), ...]
     """
+
+    # 1) Ensure single channel
+    if len(mask.shape) == 3:
+        mask_gray = cv2.cvtColor(mask, cv2.COLOR_BGR2GRAY)
+    else:
+        mask_gray = mask.copy()
+
+    # 2) Optional blur to smooth noise before threshold
+    if blur_ksize >= 3 and blur_ksize % 2 == 1:
+        mask_gray = cv2.GaussianBlur(mask_gray, (blur_ksize, blur_ksize), 0)
+
+    # 3) Binarize (in case it's not strictly 0/255 already)
+    _, th = cv2.threshold(mask_gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+
+    # 4) Morphological operations to fill gaps and remove specks
+    kernel = cv2.getStructuringElement(
+        cv2.MORPH_ELLIPSE, (morph_kernel_size, morph_kernel_size)
+    )
+    th = cv2.morphologyEx(th, cv2.MORPH_CLOSE, kernel, iterations=morph_iters)
+    th = cv2.morphologyEx(th, cv2.MORPH_OPEN,  kernel, iterations=1)
+
+    # 5) Find contours on cleaned mask
+    contours, _ = cv2.findContours(th, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_NONE)
+
+    polygons = []
+
+    for cnt in contours:
+        area = cv2.contourArea(cnt)
+        if area < min_area:
+            continue  # ignore tiny blobs
+
+        # Optional: uncomment next line if you want convex obstacles only
+        # cnt = cv2.convexHull(cnt)
+
+        # 6) Simplify contour -> polygon
+        peri = cv2.arcLength(cnt, True)
+        epsilon = epsilon_factor * peri
+        approx = cv2.approxPolyDP(cnt, epsilon, True)  # shape: (N, 1, 2)
+
+        # Reshape to (N, 2) and store as int
+        poly = approx.reshape(-1, 2)
+        polygons.append(poly)
+
+    return polygons
+
+def detect_obstacles_hsv(frame, lower_hsv, upper_hsv, min_area, robot_radius):
+    """
+    Detects obstacles using HSV, cleans noise, and expands them by robot_radius.
+    Returns: (list_of_expanded_contours, c_space_mask)
+    """
+    # 1. Convert to HSV
     hsv_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
+    
+    # 2. Threshold
     mask = cv2.inRange(hsv_frame, lower_hsv, upper_hsv)
     
-    kernel = np.ones((5, 5), np.uint8)
-    mask_cleaned = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel)
+    # 3. Noise Removal (The "Cleaning" Step)
+    # We use a small fixed kernel (5x5) to remove tiny speckles
+    # If we didn't do this, tiny noise dots would become giant circles in step 4!
+    clean_kernel = np.ones((5, 5), np.uint8)
+    mask_cleaned = cv2.morphologyEx(mask, cv2.MORPH_OPEN, clean_kernel)
     
-    contours, _ = cv2.findContours(mask_cleaned, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    # 4. Expansion (C-Space Generation)
+    # We dilate the cleaned mask by the robot radius.
+    # The kernel size (diameter) must be radius * 2
+    dilation_diameter = int(robot_radius * 2)
     
-    valid_contours = [cnt for cnt in contours if cv2.contourArea(cnt) > min_area]
+    # Use an ELLIPSE kernel for smooth, circular expansion
+    if dilation_diameter > 0:
+        expansion_kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (dilation_diameter, dilation_diameter))
+        mask_expanded = cv2.dilate(mask_cleaned, expansion_kernel)
+    else:
+        mask_expanded = mask_cleaned # Should not happen if radius > 0
     
-    return valid_contours, mask_cleaned
+    # 5. Find Contours (Vertices) on the EXPANDED mask
+    #contours, _ = cv2.findContours(mask_expanded, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    
+    # 6. Filter by Area
+    #valid_contours = [cnt for cnt in contours if cv2.contourArea(cnt) > min_area]
+    
+    return valid_contours, mask_expanded
 
 
-def detect_obstacles_grayscale(frame, threshold_value, min_area):
+def detect_obstacles_grayscale(frame, threshold_value, min_area, robot_radius):
     """
-    Detects bright obstacles using grayscale thresholding.
-    Returns: (list_of_valid_contours, binary_mask_for_debugging)
+    Detects obstacles using Grayscale, cleans noise, and expands them by robot_radius.
+    Returns: (list_of_expanded_contours, c_space_mask)
     """
-    # 1. Convert to grayscale
+    # 1. Convert to Grayscale
     gray_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
     
-    # 2. Apply binary threshold
-    #    Pixels > threshold_value become 255 (white), others 0 (black)
+    # 2. Threshold
     _, mask = cv2.threshold(gray_frame, threshold_value, 255, cv2.THRESH_BINARY)
     
-    # 3. Find contours on the mask
-    #    (No cleanup/morphology needed, but you could add it)
-    contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    # 3. Noise Removal
+    clean_kernel = np.ones((5, 5), np.uint8)
+    mask_cleaned = cv2.morphologyEx(mask, cv2.MORPH_OPEN, clean_kernel)
     
-    # 4. Filter contours by area
-    valid_contours = [cnt for cnt in contours if cv2.contourArea(cnt) > min_area]
+    # 4. Expansion (C-Space Generation)
+    dilation_diameter = int(robot_radius * 2)
     
-    return valid_contours, mask
+    if dilation_diameter > 0:
+        expansion_kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (dilation_diameter, dilation_diameter))
+        mask_expanded = cv2.dilate(mask_cleaned, expansion_kernel)
+    else:
+        mask_expanded = mask_cleaned
+
+    # 5. Find Contours (Vertices)
+    #contours, _ = cv2.findContours(mask_expanded, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    
+    # 6. Filter
+    #valid_contours = [cnt for cnt in contours if cv2.contourArea(cnt) > min_area]
+    
+    return valid_contours, mask_expanded
+
 
 
 def draw_all_detections(frame, thymio_pose, goal_pos, obstacles, thymio_id, goal_id):
