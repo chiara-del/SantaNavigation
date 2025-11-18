@@ -2,6 +2,10 @@ import cv2
 import numpy as np
 import math
 import sys
+from shapely.geometry import Polygon
+from shapely.ops import unary_union
+from shapely.geometry import JOIN_STYLE
+
 
 # --- ARUCO INITIALIZATION ---
 try:
@@ -16,7 +20,8 @@ except AttributeError:
 
 def setup_camera(camera_index, width, height):
     """Initializes and configures the webcam."""
-    cap = cv2.VideoCapture(camera_index, cv2.CAP_DSHOW)
+    cap = cv2.VideoCapture(camera_index)
+    #cap = cv2.VideoCapture(1, cv2.CAP_AVFOUNDATION) # For MAC IPHONE CAM
     if not cap.isOpened():
         print(f"Error: Could not open webcam index {camera_index}.")
         return None
@@ -228,6 +233,86 @@ def mask_to_polygons(
 
     return polygons
 
+
+def expand_and_merge_polygons(
+    polygons,
+    robot_radius,
+    min_area=1.0,
+    simplify_tol=0.5
+):
+    """
+    Take a list of polygons, expand them by robot_radius, and merge overlaps.
+
+    Parameters
+    ----------
+    polygons : list of np.ndarray
+        Each polygon is (N, 2) array of [x, y] vertices.
+    robot_radius : float
+        Expansion distance (same units as your coordinates, e.g. pixels).
+    min_area : float
+        Minimum area to keep polygons (filters tiny artifacts).
+    simplify_tol : float
+        Geometric simplification tolerance.
+        Higher -> fewer vertices, but rougher shape.
+        Set to 0 to disable simplification.
+
+    Returns
+    -------
+    expanded_polygons : list of np.ndarray
+        List of expanded & merged polygons, each as (M, 2) vertices.
+    """
+
+    shapely_polys = []
+
+    # 1) Build shapely polygons and expand (buffer) them
+    for poly in polygons:
+        if len(poly) < 3:
+            continue  # not a valid polygon
+
+        p = Polygon(poly)
+
+        if not p.is_valid or p.area <= 0:
+            continue
+
+        # Expand by robot_radius with sharp (mitred) corners
+        p_expanded = p.buffer(
+            robot_radius,
+            join_style=JOIN_STYLE.mitre,   # no rounded corners
+        )
+
+        # Optional: simplify to reduce number of vertices
+        if simplify_tol > 0:
+            p_expanded = p_expanded.simplify(
+                simplify_tol,
+                preserve_topology=True
+            )
+
+        if p_expanded.area >= min_area:
+            shapely_polys.append(p_expanded)
+
+    if not shapely_polys:
+        return []
+
+    # 2) Merge overlapping / touching expanded polygons
+    merged = unary_union(shapely_polys)
+
+    # 3) Convert back to list of np.ndarray (N, 2)
+    expanded_polygons = []
+
+    if merged.geom_type == "Polygon":
+        coords = np.array(merged.exterior.coords)
+        expanded_polygons.append(coords)
+
+    elif merged.geom_type == "MultiPolygon":
+        for mp in merged.geoms:
+            if mp.area < min_area:
+                continue
+            coords = np.array(mp.exterior.coords)
+            expanded_polygons.append(coords)
+
+    return expanded_polygons
+
+
 def detect_obstacles_hsv(frame, lower_hsv, upper_hsv, min_area, robot_radius):
     """
     Detects obstacles using HSV, cleans noise, and expands them by robot_radius.
@@ -263,6 +348,9 @@ def detect_obstacles_hsv(frame, lower_hsv, upper_hsv, min_area, robot_radius):
     # 6. Filter by Area
     #valid_contours = [cnt for cnt in contours if cv2.contourArea(cnt) > min_area]
     
+    polygons = mask_to_polygons(mask_expanded)
+    valid_contours = [poly.reshape(-1, 1, 2).astype(np.int32) for poly in polygons]
+
     return valid_contours, mask_expanded
 
 
@@ -280,23 +368,16 @@ def detect_obstacles_grayscale(frame, threshold_value, min_area, robot_radius):
     # 3. Noise Removal
     clean_kernel = np.ones((5, 5), np.uint8)
     mask_cleaned = cv2.morphologyEx(mask, cv2.MORPH_OPEN, clean_kernel)
-    
-    # 4. Expansion (C-Space Generation)
-    dilation_diameter = int(robot_radius * 2)
-    
-    if dilation_diameter > 0:
-        expansion_kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (dilation_diameter, dilation_diameter))
-        mask_expanded = cv2.dilate(mask_cleaned, expansion_kernel)
-    else:
-        mask_expanded = mask_cleaned
 
-    # 5. Find Contours (Vertices)
-    #contours, _ = cv2.findContours(mask_expanded, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    # 4. Create polygons from obstacle shapes and get contours
+    polygons = mask_to_polygons(mask_cleaned)
+
+    # 5. Dilate the obstacle polygons by robot size
+    expanded_polygons = expand_and_merge_polygons(polygons, robot_radius)
+
+    valid_contours = [poly.reshape(-1, 1, 2).astype(np.int32) for poly in expanded_polygons]
     
-    # 6. Filter
-    #valid_contours = [cnt for cnt in contours if cv2.contourArea(cnt) > min_area]
-    
-    return valid_contours, mask_expanded
+    return valid_contours, mask_cleaned
 
 
 

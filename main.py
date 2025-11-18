@@ -6,7 +6,7 @@ import sys
 # --- 1. CONFIGURATION ---
 #
 # Camera setting
-CAMERA_INDEX =  1    #(0=personal webcam, 1=USB webcam)
+CAMERA_INDEX =  0    #(0=personal webcam, 1=USB webcam)
 CAMERA_WIDTH = 1920
 CAMERA_HEIGHT = 1080
 
@@ -30,7 +30,7 @@ UPPER_WHITE_HSV = np.array([179, 16, 255])
 GRAYSCALE_THRESHOLD_VALUE = 150   
 
 MIN_OBSTACLE_AREA = 200  # Minimum pixel area
-ROBOTIC_RADIUS = 109     # The radius of Thymio in pixels
+ROBOTIC_RADIUS = 80     # The radius of Thymio in pixels
 
 
 def main():
