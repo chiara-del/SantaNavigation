@@ -2,9 +2,9 @@ import cv2
 import numpy as np
 import vision_utils as vu  # our utility file
 import sys
-
+ 
 # --- 1. CONFIGURATION ---
-
+#
 # Camera setting
 CAMERA_INDEX =  1    #(0=personal webcam, 1=USB webcam)
 CAMERA_WIDTH = 1920
