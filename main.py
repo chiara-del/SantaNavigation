@@ -1,150 +1,225 @@
 import cv2
 import numpy as np
-import vision_utils as vu  # our utility file
+import vision_utils as vu
+import pathplanning_utils as pu
+import control_utils as cu
 import sys
- 
+import asyncio
+import time  # <--- NEW IMPORT
+from tdmclient import ClientAsync
+
 # --- 1. CONFIGURATION ---
-#
-# Camera setting
-CAMERA_INDEX =  0    #(0=personal webcam, 1=USB webcam)
+CAMERA_INDEX = 1
 CAMERA_WIDTH = 1920
 CAMERA_HEIGHT = 1080
-
-# Map settings
 MAP_WIDTH = 700
 MAP_HEIGHT = 500
-MATRIX_FILE_PATH = "my_matrix.npy"  # File to save/load calibration
+MATRIX_FILE_PATH = "my_matrix.npy"
 
-# Marker IDs
-THYMIO_MARKER_ID = 0  # ID of the ArUco marker on your Thymio
-GOAL_MARKER_ID = 1    # ID of the ArUco marker for the goal
+THYMIO_MARKER_ID = 0
+GOAL_MARKER_ID = 1
 
-# Choose your method: "HSV" or "GRAY"
-OBSTACLE_METHOD = "GRAY" 
+# Measurements
+ROBOT_RADIUS_PX = 62 
+MIN_OBSTACLE_AREA = 100
 
-# HSV settings (used if OBSTACLE_METHOD == "HSV")
-LOWER_WHITE_HSV = np.array([0, 0, 8])
-UPPER_WHITE_HSV = np.array([179, 16, 255])
+# Control Settings
+WAYPOINT_REACH_THRESHOLD = 30
+FORWARD_SPEED = 100
+TURNING_GAIN_KP = 3.0
 
-# Grayscale settings (used if OBSTACLE_METHOD == "GRAY")
-GRAYSCALE_THRESHOLD_VALUE = 150   
+# Resilience Settings 
+KIDNAPPING_THRESHOLD_PX = 60  # If robot is >60px from target, re-plan
+MAX_BLIND_DURATION = 0.5      # Seconds to keep driving without vision
 
-MIN_OBSTACLE_AREA = 200  # Minimum pixel area
-ROBOTIC_RADIUS = 80     # The radius of Thymio in pixels
+def transform_point(point, matrix):
+    point_np = np.array([[[point[0], point[1]]]], dtype=np.float32)
+    transformed = cv2.perspectiveTransform(point_np, matrix)
+    return (int(transformed[0][0][0]), int(transformed[0][0][1]))
 
-
-def main():
-    """
-    Main application loop for robot localization.
-    """
+async def main():
+    # --- 1. ROBOT CONNECTION (Explicit Method) ---
+    client = ClientAsync()
     
-    # --- 2. INITIALIZATION ---
-    
+    print("Waiting for Thymio node...")
+    node = await client.wait_for_node()
+    await node.lock()
+    print("Thymio Connected and Locked!")
+
+    # Initialize our controller with this active node
+    robot = cu.ThymioController(node)
+
+    # --- 2. CAMERA SETUP ---
     cap = vu.setup_camera(CAMERA_INDEX, CAMERA_WIDTH, CAMERA_HEIGHT)
-    if cap is None:
-        sys.exit("Initialization failed: Could not open camera.")
+    
+    # Safety check if camera failed
+    if cap is None: 
+        await node.unlock()
+        return
 
     matrix = vu.load_transform_matrix(MATRIX_FILE_PATH)
-    
     if matrix is None:
         matrix = vu.run_calibration_wizard(
             cap, MAP_WIDTH, MAP_HEIGHT, MATRIX_FILE_PATH
         )
         if matrix is None:
+            print("Error: Matrix not found. Run calibration separately first.")
+            await node.unlock()
             sys.exit("Calibration failed or was cancelled.")
-
+    
     print("\nInitialization complete. Starting main localization loop...")
-    print("Press 'q' in any window to quit.")
+    print("Kidnapping recovery enabled.")
+    print("Press 'q' to quit.")
+    
+    calculated_path = None
+    current_waypoint_index = 0
 
-    # --- 3. MAIN LOOP (Step 2) ---
+    # State Estimation Variables
+    last_valid_pose = None
+    last_valid_time = time.time()
 
     try:
         while True:
-            # 1. Capture frame
             ret, frame = cap.read()
             if not ret:
                 print("Error: Failed to grab frame. Exiting...")
                 break
             
-            # 2. DETECT ARUCO on the HIGH-RES frame *first*
-            # We pass the *original* 'frame' here, not the warped map
-            all_poses_original_coords = vu.detect_aruco_markers(frame)
-
-            # 3. Apply Perspective Transform to the MAP
-            #top_down_map = cv2.warpPerspective(frame, matrix, (MAP_WIDTH, MAP_HEIGHT))
-            
-            # 3. Detect all elements
-            #all_poses = vu.detect_aruco_markers(frame) # Using the 'Best Fix'
+            # --- VISION ---
+            all_poses_raw = vu.detect_aruco_markers(frame)
             top_down_map = cv2.warpPerspective(frame, matrix, (MAP_WIDTH, MAP_HEIGHT))
 
-            # 4. Detect Obstacles (using the chosen method)
+            # Red Obstacles
+            obstacle_contours, obstacle_mask = vu.detect_obstacles_red_orange(
+                top_down_map, 
+                MIN_OBSTACLE_AREA, 
+                ROBOT_RADIUS_PX
+            )
             
-            if OBSTACLE_METHOD == "HSV":
-                obstacle_contours, obstacle_mask = vu.detect_obstacles_hsv(
-                    top_down_map, LOWER_WHITE_HSV, UPPER_WHITE_HSV, MIN_OBSTACLE_AREA, ROBOTIC_RADIUS
-                )
-            elif OBSTACLE_METHOD == "GRAY":
-                obstacle_contours, obstacle_mask = vu.detect_obstacles_grayscale(
-                    top_down_map, GRAYSCALE_THRESHOLD_VALUE, MIN_OBSTACLE_AREA, ROBOTIC_RADIUS
-                )
-            else:
-                print(f"Error: Unknown OBSTACLE_METHOD: {OBSTACLE_METHOD}")
-                obstacle_contours = []
-                obstacle_mask = np.zeros((MAP_HEIGHT, MAP_WIDTH), dtype=np.uint8)
-   
-
-            # 5. TRANSFORM ArUco coordinates into Map coordinates
+            # --- STATE ESTIMATION (Handle Lost Position) ---
+            current_time = time.time()
             thymio_pose = None
+            
+            # Check for Thymio Marker
+            if THYMIO_MARKER_ID in all_poses_raw:
+                raw_pt, angle = all_poses_raw[THYMIO_MARKER_ID]
+                map_pt = transform_point(raw_pt, matrix)
+                thymio_pose = (map_pt, angle)
+                
+                # Update "Memory"
+                last_valid_pose = thymio_pose
+                last_valid_time = current_time
+            
+            elif last_valid_pose is not None:
+                # If marker is missing, check how long we've been blind
+                if current_time - last_valid_time < MAX_BLIND_DURATION:
+                    # Trust the old position for a split second (Coast)
+                    thymio_pose = last_valid_pose
+                else:
+                    # Too long! We have truly lost the robot.
+                    thymio_pose = None
+
+            # Check for Goal Marker
             goal_position = None
+            if GOAL_MARKER_ID in all_poses_raw:
+                raw_pt, _ = all_poses_raw[GOAL_MARKER_ID]
+                goal_position = transform_point(raw_pt, matrix)
+
+            # --- PLANNING & DYNAMIC RE-PLANNING (Handle Kidnapping) ---
+            should_plan = False
             
-            # Process Thymio
-            if THYMIO_MARKER_ID in all_poses_original_coords:
-                original_pose = all_poses_original_coords[THYMIO_MARKER_ID]
-                original_pos, original_angle = original_pose
-                
-                # Transform the center point
-                # Note: cv2.perspectiveTransform needs a 3D array: [[[x, y]]]
-                original_point_np = np.float32([[original_pos]]).reshape(-1, 1, 2)
-                transformed_point = cv2.perspectiveTransform(original_point_np, matrix)
-                
-                map_x = int(transformed_point[0][0][0])
-                map_y = int(transformed_point[0][0][1])
-                
-                # We can't transform the angle directly, but it's often
-                # good enough *unless* the camera is at a very sharp angle.
-                # For a top-down camera, the angle is preserved.
-                thymio_pose = ((map_x, map_y), original_angle)
+            # Case 1: First Plan (We have robot & goal, but no path yet)
+            if thymio_pose and goal_position and calculated_path is None:
+                should_plan = True
+                print("Initial Plan...")
 
-            ##DEBUGGING
-            #print('Thymio pose:', thymio_pose)
+            # Case 2: Kidnapping Check (We have a path, but robot is far off course)
+            elif thymio_pose and goal_position and calculated_path:
+                # Get current target waypoint
+                if current_waypoint_index < len(calculated_path):
+                    target = calculated_path[current_waypoint_index]
+                    robot_xy = thymio_pose[0]
+                    
+                    # Calculate distance to where we are supposed to be going
+                    dist_to_target = np.hypot(robot_xy[0]-target[0], robot_xy[1]-target[1])
+                    
+                    # If we are absurdly far from the target, we were kidnapped or pushed
+                    if dist_to_target > KIDNAPPING_THRESHOLD_PX:
+                        print(f"Kidnapping Detected! (Dist: {dist_to_target:.1f} px)")
+                        should_plan = True
 
-            # Process Goal
-            if GOAL_MARKER_ID in all_poses_original_coords:
-                original_pos, _ = all_poses_original_coords[GOAL_MARKER_ID]
-                original_point_np = np.float32([[original_pos]]).reshape(-1, 1, 2)
-                transformed_point = cv2.perspectiveTransform(original_point_np, matrix)
-                goal_position = (int(transformed_point[0][0][0]), int(transformed_point[0][0][1]))
+            # Execute Planning
+            if should_plan:
+                start_point = thymio_pose[0]
+                planner_obstacles = [ [tuple(pt[0]) for pt in cnt] for cnt in obstacle_contours ]
+                
+                # Plan path
+                path, _ = pu.plan_path(start_point, goal_position, planner_obstacles, safety=0.0)
+                
+                if path:
+                    calculated_path = path
+                    current_waypoint_index = 1 # Reset to first waypoint (skip start point)
+                    print("Path Updated!")
+                else:
+                    print("Planning failed (blocked?). Stopping.")
+                    calculated_path = None
+                    await robot.stop()
 
-            ##DEBUGGING
-            #print('Goal position:', goal_position)
-            
-            # 6. Visualization 
-            display_frame = top_down_map.copy()
+            # --- CONTROL ---
+            if thymio_pose and calculated_path and current_waypoint_index < len(calculated_path):
+                robot_xy = thymio_pose[0]
+                robot_angle = thymio_pose[1]
+                target_waypoint = calculated_path[current_waypoint_index]
+                
+                if cu.check_waypoint_reached(robot_xy, target_waypoint, WAYPOINT_REACH_THRESHOLD):
+                    print(f"Reached Waypoint {current_waypoint_index}")
+                    current_waypoint_index += 1
+                    
+                    if current_waypoint_index >= len(calculated_path):
+                        print("GOAL REACHED!")
+                        await robot.stop()
+                        calculated_path = None # Clear path to allow new goals
+                else:
+                    left, right = cu.calculate_control_command(
+                        robot_xy, robot_angle, target_waypoint, 
+                        base_speed=FORWARD_SPEED, k_p=TURNING_GAIN_KP
+                    )
+                    await robot.set_motors(left, right)
+
+            elif thymio_pose is None:
+                # Only stop if we have truly lost the robot for > 0.5 seconds
+                await robot.stop()
+
+            # --- VISUALIZATION ---
+            if calculated_path:
+                for i in range(len(calculated_path) - 1):
+                    pt1 = (int(calculated_path[i][0]), int(calculated_path[i][1]))
+                    pt2 = (int(calculated_path[i+1][0]), int(calculated_path[i+1][1]))
+                    cv2.line(top_down_map, pt1, pt2, (0, 255, 0), 3)
+                if current_waypoint_index < len(calculated_path):
+                    target = calculated_path[current_waypoint_index]
+                    cv2.circle(top_down_map, (int(target[0]), int(target[1])), 8, (0, 0, 255), -1)
+
             vu.draw_all_detections(
-                display_frame, thymio_pose, goal_position, 
+                top_down_map, thymio_pose, goal_position, 
                 obstacle_contours, THYMIO_MARKER_ID, GOAL_MARKER_ID
             )
             
-            cv2.imshow("Top-Down Map with Detections", display_frame)
-            cv2.imshow("Obstacle Mask (Debug)", obstacle_mask)
+            cv2.imshow("Top-Down Map", top_down_map)
+            cv2.imshow("Obstacle Mask", obstacle_mask)
 
+            # Yield control to tdmclient
+            await asyncio.sleep(0.01)
             if cv2.waitKey(1) & 0xFF == ord('q'):
                 break
-
+                    
     finally:
-        print("Cleaning up and closing windows.")
+        print("Stopping robot...")
+        await robot.stop()
+        await node.unlock() # Unlock explicitly
         cap.release()
         cv2.destroyAllWindows()
+        print("Done!")
 
 if __name__ == "__main__":
-    main()
+    asyncio.run(main())

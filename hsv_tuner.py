@@ -8,7 +8,7 @@ import numpy as np
 
 # --- 1. CONFIGURATION ---
 USE_WEBCAM = True  # Set to True to use live webcam, False for static image
-CAMERA_INDEX = 0    # Your camera index
+CAMERA_INDEX = 1    # Your camera index
 IMAGE_PATH = "my_arena_image.jpg" # Path to your test image
 
 # A "dummy" function that does nothing.
@@ -36,7 +36,7 @@ cv2.setTrackbarPos("S_max", "HSV Tuner", 25)  # Good start for S_max (for white)
 
 # Setup camera or load image
 if USE_WEBCAM:
-    cap = cv2.VideoCapture(CAMERA_INDEX)
+    cap = cv2.VideoCapture(CAMERA_INDEX, cv2.CAP_DSHOW)
 else:
     # Load the image once
     image = cv2.imread(IMAGE_PATH)

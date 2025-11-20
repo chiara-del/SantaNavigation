@@ -47,7 +47,7 @@ def click_event(event, x, y, flags, params):
                     print(f"------------------------------------------------")
                     
                     # Calculate Thymio radius example
-                    thymio_radius_cm = 8.0 # Approx radius
+                    thymio_radius_cm = 5.5 # Approx radius
                     thymio_radius_px = int(thymio_radius_cm * scale_ratio)
                     print(f"Example: Thymio Radius ({thymio_radius_cm} cm) = {thymio_radius_px} pixels")
                     

@@ -20,7 +20,7 @@ except AttributeError:
 
 def setup_camera(camera_index, width, height):
     """Initializes and configures the webcam."""
-    cap = cv2.VideoCapture(camera_index)
+    cap = cv2.VideoCapture(camera_index, cv2.CAP_DSHOW)
     #cap = cv2.VideoCapture(1, cv2.CAP_AVFOUNDATION) # For MAC IPHONE CAM
     if not cap.isOpened():
         print(f"Error: Could not open webcam index {camera_index}.")
@@ -312,6 +312,41 @@ def expand_and_merge_polygons(
 
     return expanded_polygons
 
+def detect_obstacles_red_orange(frame, min_area, robot_radius):
+    """
+    Detects ONLY Red/Orange obstacles. 
+    Ignores White (Robot), Black (Shadows), and Green (Floor).
+    """
+    # 1. Convert to HSV
+    hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
+    
+    # 2. Define Red/Orange Ranges
+    # Range 1: 0 to 20 degrees (Red to Orange)
+    lower_red1 = np.array([0, 100, 100])
+    upper_red1 = np.array([20, 255, 255])
+    
+    # Range 2: 170 to 180 degrees (Dark Red wrap-around)
+    lower_red2 = np.array([127, 59, 172])
+    upper_red2 = np.array([179, 255, 255])
+    
+    # 3. Create Masks
+    mask1 = cv2.inRange(hsv, lower_red1, upper_red1)
+    mask2 = cv2.inRange(hsv, lower_red2, upper_red2)
+    
+    # Combine them (Red OR Dark Red)
+    mask = cv2.bitwise_or(mask1, mask2)
+    
+    # 4. Noise Removal
+    clean_kernel = np.ones((5, 5), np.uint8)
+    mask_cleaned = cv2.morphologyEx(mask, cv2.MORPH_OPEN, clean_kernel)
+    
+    # 5. Polygon Approximation & Expansion (Same as before)
+    polygons = mask_to_polygons(mask_cleaned)
+    expanded_polygons = expand_and_merge_polygons(polygons, robot_radius)
+    
+    valid_contours = [poly.reshape(-1, 1, 2).astype(np.int32) for poly in expanded_polygons]
+    
+    return valid_contours, mask_cleaned
 
 def detect_obstacles_hsv(frame, lower_hsv, upper_hsv, min_area, robot_radius):
     """
