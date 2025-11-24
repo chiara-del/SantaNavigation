@@ -14,13 +14,13 @@ CAMERA_WIDTH = 1920
 CAMERA_HEIGHT = 1080
 MAP_WIDTH = 700
 MAP_HEIGHT = 500
-MATRIX_FILE_PATH = "my_matrix.npy"
+MATRIX_FILE_PATH = "calibration_matrix.npy"
 
 THYMIO_MARKER_ID = 0
 GOAL_MARKER_ID = 1
 
 # Measurements
-ROBOT_RADIUS_PX = 62 
+ROBOT_RADIUS_PX = 66 
 MIN_OBSTACLE_AREA = 100
 
 # Control Settings
@@ -39,8 +39,7 @@ def transform_point(point, matrix):
 
 async def main():
     # --- 1. ROBOT CONNECTION (Explicit Method) ---
-    client = ClientAsync()
-    
+    client = ClientAsync()    
     print("Waiting for Thymio node...")
     node = await client.wait_for_node()
     await node.lock()
@@ -59,7 +58,7 @@ async def main():
 
     matrix = vu.load_transform_matrix(MATRIX_FILE_PATH)
     if matrix is None:
-        matrix = vu.run_calibration_wizard(
+        matrix = vu.perspective_calibration(
             cap, MAP_WIDTH, MAP_HEIGHT, MATRIX_FILE_PATH
         )
         if matrix is None:
@@ -77,6 +76,23 @@ async def main():
     # State Estimation Variables
     last_valid_pose = None
     last_valid_time = time.time()
+    
+    # Find obstacles once using a stable frame
+    # Warm up camera
+    for _ in range(5):
+        cap.read()
+
+    # Collect stable frames
+    frames = []
+    for _ in range(5):
+        ret, f = cap.read()
+        frames.append(f)
+        await asyncio.sleep(0.05)
+
+    # Average them to reduce noise & flicker
+    stable_frame = np.median(np.stack(frames), axis=0).astype(np.uint8)
+    top_down_map = cv2.warpPerspective(stable_frame, matrix, (MAP_WIDTH, MAP_HEIGHT))
+    obstacle_contours, obstacle_mask = vu.detect_obstacles(top_down_map, MIN_OBSTACLE_AREA, ROBOT_RADIUS_PX)
 
     try:
         while True:
@@ -89,12 +105,12 @@ async def main():
             all_poses_raw = vu.detect_aruco_markers(frame)
             top_down_map = cv2.warpPerspective(frame, matrix, (MAP_WIDTH, MAP_HEIGHT))
 
-            # Red Obstacles
-            obstacle_contours, obstacle_mask = vu.detect_obstacles_red_orange(
-                top_down_map, 
-                MIN_OBSTACLE_AREA, 
-                ROBOT_RADIUS_PX
-            )
+            # Commented this to only detect obstacles at  the start
+            # obstacle_contours, obstacle_mask = vu.detect_obstacles(
+            #     top_down_map, 
+            #     MIN_OBSTACLE_AREA, 
+            #     ROBOT_RADIUS_PX
+            # )
             
             # --- STATE ESTIMATION (Handle Lost Position) ---
             current_time = time.time()
@@ -201,8 +217,7 @@ async def main():
                     cv2.circle(top_down_map, (int(target[0]), int(target[1])), 8, (0, 0, 255), -1)
 
             vu.draw_all_detections(
-                top_down_map, thymio_pose, goal_position, 
-                obstacle_contours, THYMIO_MARKER_ID, GOAL_MARKER_ID
+                top_down_map, thymio_pose, goal_position, obstacle_contours
             )
             
             cv2.imshow("Top-Down Map", top_down_map)

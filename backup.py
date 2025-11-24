@@ -69,3 +69,75 @@ def main():
         print("Cleaning up and closing windows.")
         cap.release()
         cv2.destroyAllWindows()
+
+
+
+
+
+# BACKUP OF HSV AND GRAYSCALE (REPLACED BY RED OBSTACLE DETECTION)
+
+def detect_obstacles_hsv(frame, lower_hsv, upper_hsv, min_area, robot_radius):
+    """
+    Detects obstacles using HSV, cleans noise, and expands them by robot_radius.
+    Returns: (list_of_expanded_contours, c_space_mask)
+    """
+    # 1. Convert to HSV
+    hsv_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
+    
+    # 2. Threshold
+    mask = cv2.inRange(hsv_frame, lower_hsv, upper_hsv)
+    
+    # 3. Noise Removal (The "Cleaning" Step)
+    # We use a small fixed kernel (5x5) to remove tiny speckles
+    # If we didn't do this, tiny noise dots would become giant circles in step 4!
+    clean_kernel = np.ones((5, 5), np.uint8)
+    mask_cleaned = cv2.morphologyEx(mask, cv2.MORPH_OPEN, clean_kernel)
+    
+    # 4. Expansion (C-Space Generation)
+    # We dilate the cleaned mask by the robot radius.
+    # The kernel size (diameter) must be radius * 2
+    dilation_diameter = int(robot_radius * 2)
+    
+    # Use an ELLIPSE kernel for smooth, circular expansion
+    if dilation_diameter > 0:
+        expansion_kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (dilation_diameter, dilation_diameter))
+        mask_expanded = cv2.dilate(mask_cleaned, expansion_kernel)
+    else:
+        mask_expanded = mask_cleaned # Should not happen if radius > 0
+    
+    # 5. Find Contours (Vertices) on the EXPANDED mask
+    #contours, _ = cv2.findContours(mask_expanded, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    
+    # 6. Filter by Area
+    #valid_contours = [cnt for cnt in contours if cv2.contourArea(cnt) > min_area]
+    
+    polygons = mask_to_polygons(mask_expanded)
+    valid_contours = [poly.reshape(-1, 1, 2).astype(np.int32) for poly in polygons]
+
+    return valid_contours, mask_expanded
+
+
+def detect_obstacles_grayscale(frame, threshold_value, min_area, robot_radius):
+    """
+    Detects obstacles using Grayscale, cleans noise, and expands them by robot_radius.
+    Returns: (list_of_expanded_contours, c_space_mask)
+    """
+    # 1. Convert to Grayscale
+    gray_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+    
+    # 2. Threshold
+    _, mask = cv2.threshold(gray_frame, threshold_value, 255, cv2.THRESH_BINARY)
+    
+    # 3. Noise Removal
+    clean_kernel = np.ones((5, 5), np.uint8)
+    mask_cleaned = cv2.morphologyEx(mask, cv2.MORPH_OPEN, clean_kernel)
+
+    # 4. Create polygons from obstacle shapes and get contours
+    polygons = mask_to_polygons(mask_cleaned)
+
+    # 5. Dilate the obstacle polygons by robot size
+    expanded_polygons = expand_and_merge_polygons(polygons, robot_radius)
+
+    valid_contours = [poly.reshape(-1, 1, 2).astype(np.int32) for poly in expanded_polygons]
+    
+    return valid_contours, mask_cleaned
