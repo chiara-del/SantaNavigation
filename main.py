@@ -58,14 +58,23 @@ async def main():
 
     matrix = vu.load_transform_matrix(MATRIX_FILE_PATH)
     if matrix is None:
-        matrix = vu.perspective_calibration(
-            cap, MAP_WIDTH, MAP_HEIGHT, MATRIX_FILE_PATH
-        )
-        if matrix is None:
-            print("Error: Matrix not found. Run calibration separately first.")
-            await node.unlock()
-            sys.exit("Calibration failed or was cancelled.")
+        matrix = vu.perspective_calibration(cap, MAP_WIDTH, MAP_HEIGHT, MATRIX_FILE_PATH)
     
+    # Detect obstacles using a stable frame
+    # Warm up camera
+    for _ in range(5):
+        cap.read()
+    # Collect stable frames
+    frames = []
+    for _ in range(5):
+        ret, f = cap.read()
+        frames.append(f)
+        await asyncio.sleep(0.05)
+    # Average them to reduce noise & flicker
+    stable_frame = np.median(np.stack(frames), axis=0).astype(np.uint8)
+    top_down_map = cv2.warpPerspective(stable_frame, matrix, (MAP_WIDTH, MAP_HEIGHT))
+    obstacle_contours, obstacle_mask = vu.detect_obstacles(top_down_map, MIN_OBSTACLE_AREA, ROBOT_RADIUS_PX)
+
     print("\nInitialization complete. Starting main localization loop...")
     print("Kidnapping recovery enabled.")
     print("Press 'q' to quit.")
@@ -76,23 +85,6 @@ async def main():
     # State Estimation Variables
     last_valid_pose = None
     last_valid_time = time.time()
-    
-    # Find obstacles once using a stable frame
-    # Warm up camera
-    for _ in range(5):
-        cap.read()
-
-    # Collect stable frames
-    frames = []
-    for _ in range(5):
-        ret, f = cap.read()
-        frames.append(f)
-        await asyncio.sleep(0.05)
-
-    # Average them to reduce noise & flicker
-    stable_frame = np.median(np.stack(frames), axis=0).astype(np.uint8)
-    top_down_map = cv2.warpPerspective(stable_frame, matrix, (MAP_WIDTH, MAP_HEIGHT))
-    obstacle_contours, obstacle_mask = vu.detect_obstacles(top_down_map, MIN_OBSTACLE_AREA, ROBOT_RADIUS_PX)
 
     try:
         while True:
