@@ -19,8 +19,8 @@ except AttributeError:
 
 def setup_camera(camera_index, width, height):
     """Initializes and configures the webcam."""
-    #cap = cv2.VideoCapture(camera_index, cv2.CAP_DSHOW)
-    cap = cv2.VideoCapture(1, cv2.CAP_AVFOUNDATION) # For mac iphone camera
+    cap = cv2.VideoCapture(camera_index, cv2.CAP_DSHOW)
+    #cap = cv2.VideoCapture(1, cv2.CAP_AVFOUNDATION) # For mac iphone camera
     if not cap.isOpened():
         print(f"Error: Could not open webcam index {camera_index}.")
         return None
@@ -199,8 +199,8 @@ def detect_obstacles(frame, min_area, robot_radius):
     """
     hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV) #Convert the frame color scale from BGR to HSV
     #Define the ranges for obstacle color
-    lower_red1 = np.array([0, 100, 100])
-    upper_red1 = np.array([20, 255, 255])
+    lower_red1 = np.array([0, 95, 255])
+    upper_red1 = np.array([179, 255, 255])
     lower_red2 = np.array([127, 59, 172])
     upper_red2 = np.array([179, 255, 255])
     #Create masks to detect pixels in these color ranges and combine them in one mask

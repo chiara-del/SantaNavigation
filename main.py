@@ -27,6 +27,11 @@ MIN_OBSTACLE_AREA = 100
 WAYPOINT_REACH_THRESHOLD = 30
 FORWARD_SPEED = 100
 TURNING_GAIN_KP = 3.0
+OBST_THRL = 10      # low obstacle threshold to switch state 1->0
+OBST_THRH = 20      # high obstacle threshold to switch state 0->1
+OBST_SPEEDGAIN = 5  # /100 (actual gain: 5/100=0.05)
+FOLLOW_PATH = 0
+OBSTACLE_AVOIDANCE = 1
 
 # Resilience Settings 
 KIDNAPPING_THRESHOLD_PX = 60  # If robot is >60px from target, re-plan
@@ -47,6 +52,10 @@ async def main():
 
     # Initialize our controller with this active node
     robot = cu.ThymioController(node)
+
+    # Activate sensing from prox_sensors
+    await node.wait_for_variables({"prox.horizontal"})
+    state = FOLLOW_PATH          # 0=follow path, 1=obstacle avoidance
 
     # --- 2. CAMERA SETUP ---
     cap = vu.setup_camera(CAMERA_INDEX, CAMERA_WIDTH, CAMERA_HEIGHT)
@@ -93,16 +102,21 @@ async def main():
                 print("Error: Failed to grab frame. Exiting...")
                 break
             
+           # Get values of sensors
+            vals = list(node["prox.horizontal"])
+            obst_left, obst_right = vals[0], vals[4]
+            obst = [obst_left, obst_right]  # measurements from left and right prox sensors
+
             # --- VISION ---
             all_poses_raw = vu.detect_aruco_markers(frame)
             top_down_map = cv2.warpPerspective(frame, matrix, (MAP_WIDTH, MAP_HEIGHT))
 
             # Commented this to only detect obstacles at  the start
             # obstacle_contours, obstacle_mask = vu.detect_obstacles(
-            #     top_down_map, 
-            #     MIN_OBSTACLE_AREA, 
-            #     ROBOT_RADIUS_PX
-            # )
+            #      top_down_map, 
+            #      MIN_OBSTACLE_AREA, 
+            #      ROBOT_RADIUS_PX
+            #  )
             
             # --- STATE ESTIMATION (Handle Lost Position) ---
             current_time = time.time()
@@ -173,31 +187,51 @@ async def main():
                     calculated_path = None
                     await robot.stop()
 
+            # --- State Machine for Local Avoidance ---
+            if state == FOLLOW_PATH: 
+            # switch from goal tracking to obst avoidance if obstacle detected
+                if (obst[0] > OBST_THRH):  # values higher if object near
+                    state = OBSTACLE_AVOIDANCE
+                elif (obst[1] > OBST_THRH):
+                    state = OBSTACLE_AVOIDANCE
+            elif state == OBSTACLE_AVOIDANCE:
+                if obst[0] < OBST_THRL: #values lower if object far 
+                    if obst[1] < OBST_THRL : 
+                    # switch from obst avoidance to goal tracking if obstacle got unseen
+                        state = FOLLOW_PATH
+
             # --- CONTROL ---
-            if thymio_pose and calculated_path and current_waypoint_index < len(calculated_path):
-                robot_xy = thymio_pose[0]
-                robot_angle = thymio_pose[1]
-                target_waypoint = calculated_path[current_waypoint_index]
+            if state == FOLLOW_PATH :
+                if thymio_pose and calculated_path and current_waypoint_index < len(calculated_path):
+                    robot_xy = thymio_pose[0]
+                    robot_angle = thymio_pose[1]
+                    target_waypoint = calculated_path[current_waypoint_index]
+                    if cu.check_waypoint_reached(robot_xy, target_waypoint, WAYPOINT_REACH_THRESHOLD):
+                        print(f"Reached Waypoint {current_waypoint_index}")
+                        current_waypoint_index += 1
+                        
+                        if current_waypoint_index >= len(calculated_path):
+                            print("GOAL REACHED!")
+                            await robot.stop()
+                            calculated_path = None # Clear path to allow new goals
+                    else:
+                        left, right = cu.calculate_control_command(
+                            robot_xy, robot_angle, target_waypoint, 
+                            base_speed=FORWARD_SPEED, k_p=TURNING_GAIN_KP
+                        )
+                        await robot.set_motors(left, right)
                 
-                if cu.check_waypoint_reached(robot_xy, target_waypoint, WAYPOINT_REACH_THRESHOLD):
-                    print(f"Reached Waypoint {current_waypoint_index}")
-                    current_waypoint_index += 1
-                    
-                    if current_waypoint_index >= len(calculated_path):
-                        print("GOAL REACHED!")
-                        await robot.stop()
-                        calculated_path = None # Clear path to allow new goals
-                else:
-                    left, right = cu.calculate_control_command(
-                        robot_xy, robot_angle, target_waypoint, 
-                        base_speed=FORWARD_SPEED, k_p=TURNING_GAIN_KP
-                    )
-                    await robot.set_motors(left, right)
-
-            elif thymio_pose is None:
+                elif thymio_pose is None:
                 # Only stop if we have truly lost the robot for > 0.5 seconds
-                await robot.stop()
-
+                    await robot.stop()
+                
+            else:
+                left = FORWARD_SPEED + OBST_SPEEDGAIN * (obst[0] // 100)  #(left motor)
+                right = FORWARD_SPEED + OBST_SPEEDGAIN * (obst[1] // 100) #(right motor)
+                await robot.set_motors(left, right)      
+            
+            
+                               
             # --- VISUALIZATION ---
             if calculated_path:
                 for i in range(len(calculated_path) - 1):

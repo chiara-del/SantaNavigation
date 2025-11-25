@@ -7,7 +7,7 @@ import vision_utils as vu
 CAMERA_INDEX = 1   # Set this to your USB camera index (e.g., 1)
 MAP_WIDTH = 700
 MAP_HEIGHT = 500
-MATRIX_FILE_PATH = "my_matrix.npy"
+MATRIX_FILE_PATH = "configuration_matrix"
 
 # --- GLOBAL VARIABLES ---
 points = []
