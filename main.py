@@ -82,7 +82,16 @@ async def main():
     # Average them to reduce noise & flicker
     stable_frame = np.median(np.stack(frames), axis=0).astype(np.uint8)
     top_down_map = cv2.warpPerspective(stable_frame, matrix, (MAP_WIDTH, MAP_HEIGHT))
-    obstacle_contours, obstacle_mask = vu.detect_obstacles(top_down_map, MIN_OBSTACLE_AREA, ROBOT_RADIUS_PX)
+    
+    # Try to detect the Thymio in the stable frame (in camera space)
+    all_poses_init = vu.detect_aruco_markers(stable_frame)
+    thymio_pose_init = None
+    if THYMIO_MARKER_ID in all_poses_init:
+        raw_pt, angle = all_poses_init[THYMIO_MARKER_ID]
+        map_pt = transform_point(raw_pt, matrix)
+        thymio_pose_init = (map_pt, angle)
+    #Find obstacles and ignore thymio
+    obstacle_contours, obstacle_mask = vu.detect_obstacles(top_down_map, MIN_OBSTACLE_AREA, ROBOT_RADIUS_PX, thymio_pose_init)
 
     print("\nInitialization complete. Starting main localization loop...")
     print("Kidnapping recovery enabled.")
