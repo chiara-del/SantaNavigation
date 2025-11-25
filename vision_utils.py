@@ -19,8 +19,8 @@ except AttributeError:
 
 def setup_camera(camera_index, width, height):
     """Initializes and configures the webcam."""
-    #cap = cv2.VideoCapture(camera_index, cv2.CAP_DSHOW)
-    cap = cv2.VideoCapture(1, cv2.CAP_AVFOUNDATION) # For mac iphone camera
+    cap = cv2.VideoCapture(camera_index, cv2.CAP_DSHOW)
+    #cap = cv2.VideoCapture(1, cv2.CAP_AVFOUNDATION) # For mac iphone camera
     if not cap.isOpened():
         print(f"Error: Could not open webcam index {camera_index}.")
         return None
@@ -192,8 +192,19 @@ def expand_and_merge_polygons(polygons, robot_radius, min_area = 10.0, simplify_
 
     return result
 
+def remove_robot_from_mask(mask, thymio_pose, robot_clear_radius):
+    """
+    Zeros out a circular area around the robot so its LED is not treated as an obstacle.
+    """
+    if thymio_pose is None:
+        return mask
 
-def detect_obstacles(frame, min_area, robot_radius):
+    (x, y), _ = thymio_pose
+    cleaned = mask.copy()
+    cv2.circle(cleaned, (int(x), int(y)), int(robot_clear_radius), 0, thickness=-1)
+    return cleaned
+
+def detect_obstacles(frame, min_area, robot_radius, thymio_pose = None):
     """
     Detects obstacles (red/orange color) and returns the expanded polygon contours and the clean mask.
     """
@@ -210,8 +221,12 @@ def detect_obstacles(frame, min_area, robot_radius):
     #Remove noise by shrinking and expanding white regions
     clean_kernel = np.ones((5, 5), np.uint8)
     mask_cleaned = cv2.morphologyEx(mask, cv2.MORPH_OPEN, clean_kernel)
+    #Remove thymio from the mask (red led problem)
+    if thymio_pose is not None:
+        mask_cleaned = remove_robot_from_mask(mask_cleaned, thymio_pose, robot_clear_radius=int(robot_radius * 1.2))
+
     #Approximate the obstacle shape with polygons and expand them by robot radius
-    polygons = mask_to_polygons(mask_cleaned)
+    polygons = mask_to_polygons(mask = mask_cleaned, min_area= min_area)
     expanded_polygons = expand_and_merge_polygons(polygons, robot_radius)
     valid_contours = [poly.reshape(-1, 1, 2).astype(np.int32) for poly in expanded_polygons]
     
