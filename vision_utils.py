@@ -291,10 +291,10 @@ class Vision:
     def _init_robot_radius_px(self):
         """Compute the thymio's radius in pixels using known corner distances"""
         robot_radius_cm = 7 # Actual thymio radius from center of aruco
-        aruco_corner_distance_cm_width = 70 #Distance between centers of arucos from top-left to bottom-left corners.
-        aruco_corner_distance_cm_height = 50 #Distance between centers of arucos from top-left to top_right corners.
-        px_per_cm_height = float(self.map_height)/aruco_corner_distance_cm_height #Compute height px/cm scale
-        px_per_cm_width = float(self.map_width)/aruco_corner_distance_cm_width #Compute width px/cm scale
+        aruco_corner_width_cm = 70 #Distance between centers of arucos from top-left to bottom-left corners.
+        aruco_corner_height_cm = 50 #Distance between centers of arucos from top-left to top_right corners.
+        px_per_cm_height = float(self.map_height)/aruco_corner_height_cm #Compute height px/cm scale
+        px_per_cm_width = float(self.map_width)/aruco_corner_width_cm #Compute width px/cm scale
         px_per_cm = 0.5 * (px_per_cm_height + px_per_cm_width) #Compute average scale
 
         self.robot_radius_px = robot_radius_cm * px_per_cm
