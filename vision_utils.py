@@ -6,6 +6,11 @@ from shapely.geometry import Polygon
 from shapely.ops import unary_union
 from shapely.geometry.base import JOIN_STYLE
 
+#Corner Aruco indices for calibration
+TOP_LEFT_INDEX = 2
+TOP_RIGHT_INDEX = 3
+BOTTOM_LEFT_INDEX = 4
+BOTTOM_RIGHT_INDEX = 5
 
 #ArUco Initialization
 try:
@@ -13,24 +18,25 @@ try:
     ARUCO_PARAMETERS = cv2.aruco.DetectorParameters()
     ARUCO_DETECTOR = cv2.aruco.ArucoDetector(ARUCO_DICT, ARUCO_PARAMETERS)
 except AttributeError:
-    print("Error: ArUco dictionary not found. Is 'opencv-python-contrib' installed?")
+    print("Error: Aruco dictionary not found. Is 'opencv-python-contrib' installed?")
     sys.exit()
 
 
-def setup_camera(camera_index, width, height):
+def _setup_camera(camera_index, width, height):
     """Initializes and configures the webcam."""
-    cap = cv2.VideoCapture(camera_index, cv2.CAP_DSHOW)
-    #cap = cv2.VideoCapture(1, cv2.CAP_AVFOUNDATION) # For mac iphone camera
+    #cap = cv2.VideoCapture(camera_index, cv2.CAP_DSHOW) #For provided webcam
+    cap = cv2.VideoCapture(1, cv2.CAP_AVFOUNDATION) #For mac iphone camera
     if not cap.isOpened():
         print(f"Error: Could not open webcam index {camera_index}.")
         return None
+    #Set camera parameters
     cap.set(cv2.CAP_PROP_FRAME_WIDTH, width)
     cap.set(cv2.CAP_PROP_FRAME_HEIGHT, height)
     print(f"Webcam {camera_index} opened successfully.")
     return cap
 
 
-def load_transform_matrix(path):
+def _load_transform_matrix(path):
     """Loads the perspective transform matrix from a .npy file."""
     try:
         matrix = np.load(path)
@@ -41,78 +47,75 @@ def load_transform_matrix(path):
         return None
 
 
-def perspective_calibration(cap, map_width, map_height, matrix_file_path):
+def _perspective_calibration(cap, map_width, map_height, matrix_file_path):
     """
-    Calibrates the camera perspective by clicking on the four corners of the arena and returns the trasformation matrix.
+    Creates the calibration matrix using the arucos as corner markers:
+    first shows camera frame with detected markers, then waits for user to press 's' to validate
+    and create the calibration matrix.
+    Returns the matrix and saves it to indicated path.
     """
-    src_points = []
     calibration_frame = None
 
-    def _click_callback(event, x, y, flags, param):
-        """Collect four clicks, then finish automatically."""
-        nonlocal src_points, calibration_frame
-
-        if event == cv2.EVENT_LBUTTONDOWN and len(src_points) < 4:
-            src_points.append((x, y))
-
-            # Visual feedback
-            cv2.circle(calibration_frame, (x, y), 5, (0, 255, 0), -1)
-            cv2.imshow("Click 4 Corners", calibration_frame)
-            print(f"Point {len(src_points)}: ({x}, {y})")
-
-            # If we have all 4 -> close window
-            if len(src_points) == 4:
-                print("All points selected. Computing transform...")
-                cv2.destroyWindow("Click 4 Corners")
-
-    #Capture frame to start calibration
-    print("\n--- Perspective Calibration ---")
-    print("Press 's' in the preview window to capture a calibration frame.")
+    #Wait for user to select the frame to use for calibration
     while True:
         ret, frame = cap.read()
         if not ret:
             print("Error: Unable to read from camera.")
             return None
-        preview = cv2.resize(frame, None, fx=0.5, fy=0.5)
-        cv2.imshow("Preview - Press 's' to capture", preview)
-        if cv2.waitKey(1) & 0xFF == ord('s'):
+
+        preview = frame.copy()
+        arucos = _detect_aruco_markers(preview)
+
+        # Draw detected ArUco centers for feedback
+        for marker_id, (pos, angle) in arucos.items():
+            if marker_id in [TOP_LEFT_INDEX, TOP_RIGHT_INDEX, BOTTOM_LEFT_INDEX, BOTTOM_RIGHT_INDEX]:
+                cv2.circle(preview, pos, 5, (0, 0, 255), -1)
+
+
+        cv2.imshow("ArUco Calibration - Press 's' when ready", preview)
+        key = cv2.waitKey(1) & 0xFF
+
+        #If 's' key is pressed, the current frame is used to compute the matrix
+        if key == ord('s'):
             calibration_frame = frame.copy()
-            cv2.destroyWindow("Preview - Press 's' to capture")
+            cv2.destroyWindow("ArUco Calibration - Press 's' when ready")
             break
 
-    #Click on four corners
-    print("Click the arena corners in this order:")
-    print("  1. Top-Left\n  2. Top-Right\n  3. Bottom-Right\n  4. Bottom-Left")
-    cv2.namedWindow("Click 4 Corners")
-    cv2.setMouseCallback("Click 4 Corners", _click_callback)
-    cv2.imshow("Click 4 Corners", calibration_frame)
+    # Run detection on the captured frame
+    arucos = _detect_aruco_markers(calibration_frame)
 
-    #Wait until all 4 points are collected
-    while len(src_points) < 4:
-        if cv2.waitKey(1) & 0xFF == ord('q'):
-            print("Calibration cancelled.")
-            cv2.destroyAllWindows()
-            return None
+    # Extract the corner centers
+    (top_left_center,  _ ) = arucos[TOP_LEFT_INDEX]
+    (top_right_center, _ ) = arucos[TOP_RIGHT_INDEX]
+    (bottom_right_center, _ ) = arucos[BOTTOM_RIGHT_INDEX]
+    (bottom_left_center, _ ) = arucos[BOTTOM_LEFT_INDEX]
 
-    #Compute the transformation matrix
-    src = np.float32(src_points)
+    src = np.float32([
+        top_left_center,
+        top_right_center,
+        bottom_right_center,
+        bottom_left_center
+    ])
+
     dst = np.float32([
         [0, 0],
         [map_width, 0],
         [map_width, map_height],
         [0, map_height]
     ])
+    
+    #Compute the matrix from the corners and distances
     matrix = cv2.getPerspectiveTransform(src, dst)
     np.save(matrix_file_path, matrix)
-    print(f"Calibration complete. Saved to: {matrix_file_path}")
-    
+    print(f"Calibration complete. Saved matrix to: {matrix_file_path}")
+
     return matrix
 
 
-def detect_aruco_markers(frame):
+def _detect_aruco_markers(frame):
     """
-    Detects ALL ArUco markers in a frame.
-    Returns: A dictionary {id: ((x, y), angle_deg)}
+    Detects all Aruco markers in a frame.
+    Returns a dictionary {id: ((x, y), angle_deg)}.
     """
     corners, ids, _ = ARUCO_DETECTOR.detectMarkers(frame)
 
@@ -122,7 +125,6 @@ def detect_aruco_markers(frame):
             pts = marker_corners[0]
             #Get the center coordinates of each marker
             center_x, center_y = np.mean(pts, axis=0)
-
             #Compute the marker orientation in degrees
             top_mid = (pts[0] + pts[1]) / 2.0
             bottom_mid = (pts[2] + pts[3]) / 2.0
@@ -130,15 +132,14 @@ def detect_aruco_markers(frame):
             dy = top_mid[1] - bottom_mid[1]
             angle_rad = math.atan2(dx, -dy)
             angle_deg = math.degrees(angle_rad) % 360  # wraps into [0, 360)
-
             poses[int(marker_id)] = ((int(center_x), int(center_y)), angle_deg)
     
     return poses
 
 
-def mask_to_polygons(mask, min_area = 200, epsilon_factor = 0.01):
+def _mask_to_polygons(mask, min_area = 200, epsilon_factor = 0.01):
     """
-    Convert a binary obstacle mask (white = obstacle) into polygons approximating each obstacle shape.
+    Converts a binary obstacle mask (white = obstacle) into polygons approximating each obstacle shape.
     """
     # Ensure binary mask
     _, th = cv2.threshold(mask, 127, 255, cv2.THRESH_BINARY)
@@ -157,7 +158,7 @@ def mask_to_polygons(mask, min_area = 200, epsilon_factor = 0.01):
     return polygons
 
 
-def expand_and_merge_polygons(polygons, robot_radius, min_area = 10.0, simplify_tol = 1):
+def _expand_and_merge_polygons(polygons, robot_radius, min_area = 10.0, simplify_tol = 1):
     """
     Expand polygons by robot_radius and merge polygons that overlap.
     """
@@ -192,65 +193,196 @@ def expand_and_merge_polygons(polygons, robot_radius, min_area = 10.0, simplify_
 
     return result
 
-def remove_robot_from_mask(mask, thymio_pose, robot_clear_radius):
-    """
-    Zeros out a circular area around the robot so its LED is not treated as an obstacle.
-    """
-    if thymio_pose is None:
-        return mask
 
-    (x, y), _ = thymio_pose
-    cleaned = mask.copy()
-    cv2.circle(cleaned, (int(x), int(y)), int(robot_clear_radius), 0, thickness=-1)
-    return cleaned
-
-def detect_obstacles(frame, min_area, robot_radius, thymio_pose = None):
+def _detect_obstacles(frame, min_area, robot_radius, thymio_pose = None):
     """
     Detects obstacles (red/orange color) and returns the expanded polygon contours and the clean mask.
     """
     hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV) #Convert the frame color scale from BGR to HSV
     #Define the ranges for obstacle color
-    lower_red1 = np.array([0, 95, 255])
-    upper_red1 = np.array([179, 255, 255])
-    lower_red2 = np.array([127, 59, 172])
-    upper_red2 = np.array([179, 255, 255])
+    lower_red = np.array([0, 160, 64])
+    upper_red = np.array([20, 255, 255])
     #Create masks to detect pixels in these color ranges and combine them in one mask
-    mask1 = cv2.inRange(hsv, lower_red1, upper_red1)
-    mask2 = cv2.inRange(hsv, lower_red2, upper_red2)
-    mask = cv2.bitwise_or(mask1, mask2)
+    mask = cv2.inRange(hsv, lower_red, upper_red)
     #Remove noise by shrinking and expanding white regions
     clean_kernel = np.ones((5, 5), np.uint8)
     mask_cleaned = cv2.morphologyEx(mask, cv2.MORPH_OPEN, clean_kernel)
-    #Remove thymio from the mask (red led problem)
+    #Remove thymio from the mask (red led problem) by adding black disk around thymio position
     if thymio_pose is not None:
-        mask_cleaned = remove_robot_from_mask(mask_cleaned, thymio_pose, robot_clear_radius=int(robot_radius * 1.2))
+        (x, y), _ = thymio_pose
+        cv2.circle(mask_cleaned, (int(x), int(y)), int(robot_radius * 1.2), 0, thickness=-1)
 
-    #Approximate the obstacle shape with polygons and expand them by robot radius
-    polygons = mask_to_polygons(mask = mask_cleaned, min_area= min_area)
-    expanded_polygons = expand_and_merge_polygons(polygons, robot_radius)
+    #Approximate the obstacle shape with polygons and expand them by robot radius to avoid collisions (defines the danger zone)
+    polygons = _mask_to_polygons(mask = mask_cleaned, min_area= min_area)
+    expanded_polygons = _expand_and_merge_polygons(polygons, robot_radius)
     valid_contours = [poly.reshape(-1, 1, 2).astype(np.int32) for poly in expanded_polygons]
     
     return valid_contours, mask_cleaned
 
 
-def draw_all_detections(frame, thymio_pose, goal_pos, obstacles):
+def _draw_all_detections(frame, thymio_pose, goal_pos, obstacles):
     """
     Draws all detected elements onto the display frame.
     """
     if thymio_pose is not None:
         pos, angle = thymio_pose
-        cv2.circle(frame, pos, 10, (0, 255, 255), -1) #yellow dot at the thymio's position
+        cv2.circle(frame, pos, 10, (0, 255, 255), -1) #Draw yellow dot at the thymio's position
         angle_rad = math.radians(angle)
         end_x = int(pos[0] + 30 * math.sin(angle_rad))
         end_y = int(pos[1] - 30 * math.cos(angle_rad))
-        cv2.arrowedLine(frame, pos, (end_x, end_y), (0, 255, 255), 2)
+        cv2.arrowedLine(frame, pos, (end_x, end_y), (0, 255, 255), 2) #Draw yellow arrow to visualize orientation
         cv2.putText(frame, "Thymio", 
                     (pos[0] + 15, pos[1]), 
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 255), 1)
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 255), 1) #Adds text "Thymio"
 
     if goal_pos is not None:
         cv2.circle(frame, goal_pos, 15, (255, 0, 0), -1) #blue dot at the goal position
         cv2.putText(frame, "Goal", (goal_pos[0] + 15, goal_pos[1]), 
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 0, 0), 1)
-    
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 0, 0), 1) #Adds text "Goal"
     cv2.drawContours(frame, obstacles, -1, (0, 0, 255), 2) #displays the obstacles dilated contours
+
+
+
+#Vision Class Definition
+
+class Vision:
+
+    def __init__(
+        self,
+        camera_index,
+        cam_width,
+        cam_height,
+        map_width,
+        map_height,
+        matrix_file_path,
+        thymio_marker_id=None,
+        goal_marker_id=None,
+        robot_radius_px=66,
+        min_obstacle_area=200,
+    ):
+        self.camera_index = camera_index
+        self.cam_width = cam_width
+        self.cam_height = cam_height
+        self.map_width = map_width
+        self.map_height = map_height
+        self.matrix_file_path = matrix_file_path
+
+        self.thymio_marker_id = thymio_marker_id
+        self.goal_marker_id = goal_marker_id
+        self.robot_radius_px = robot_radius_px
+        self.min_obstacle_area = min_obstacle_area
+
+        #Opens the camera and sets parameters
+        self.cap = _setup_camera(self.camera_index, self.cam_width, self.cam_height)
+
+        # Use existing helper to load / compute matrix
+        self.matrix = _load_transform_matrix(self.matrix_file_path)
+        if self.matrix is None:
+            print("No existing matrix found, running calibration...")
+            self.matrix = _perspective_calibration(self.cap, self.map_width, self.map_height, self.matrix_file_path)
+
+    #Warping method
+
+    def transform_point(self, point):
+        point_np = np.array([[[point[0], point[1]]]], dtype=np.float32)
+        transformed = cv2.perspectiveTransform(point_np, self.matrix)
+        return (int(transformed[0][0][0]), int(transformed[0][0][1]))
+
+    #Frame access methods
+
+    def get_raw_frame(self):
+        """Returns a single raw frame from the camera."""
+        ret, frame = self.cap.read()
+        if not ret:
+            raise RuntimeError("Failed to read from camera")
+        return frame
+
+    def get_warped_frame(self):
+        """
+        Returns a perspective-warped frame using the calibration matrix.
+        """
+        frame = self.get_raw_frame()
+        warped = cv2.warpPerspective(
+            frame, self.matrix, (self.map_width, self.map_height)
+        )
+        return warped
+
+    #Marker detection methods
+
+    def detect_markers(self, frame=None):
+        """
+        Detects all ArUco markers in the given frame (or in a warped frame if not indicated).
+        """
+        if frame is None:
+            frame = self.get_warped_frame()
+        return _detect_aruco_markers(frame)
+
+    def get_thymio_pose(self, frame=None):
+        """
+        Returns ((x, y), angle_deg) for thymio marker in the given frame (or in warped frame if not indicated).
+        """
+        if frame is None:
+            frame = self.get_warped_frame()
+        arucos = self.detect_markers(frame)
+        return arucos.get(self.thymio_marker_id)
+
+    def get_goal_pos(self, frame=None):
+        """
+        Returns (x, y) of goal marker center, or None if not found.
+        """
+        if self.goal_marker_id is None:
+            return None
+        if frame is None:
+            frame = self.get_warped_frame()
+        arucos = _detect_aruco_markers(frame)
+        goal_pose = arucos.get(self.goal_marker_id)
+        if goal_pose is None:
+            return None
+        (x, y), _ = goal_pose
+        return (x, y)
+
+    #Obstacle detection method
+
+    def detect_obstacles(self):
+        """
+        Detects obstacles in a stable frame and returns obstacles and cleaned mask.
+        """
+        #Make sure the camera is running by skipping first five frames.
+        for _ in range(5):
+            self.get_warped_frame()
+        frames = []
+        for _ in range(5):
+            frames.append(self.get_warped_frame())
+
+        # Average them to reduce noise & flicker
+        stable_frame = np.median(np.stack(frames), axis=0).astype(np.uint8)
+
+        #Try to detect the thymio in the stable frame
+        thymio_pose = self.get_thymio_pose(stable_frame)
+        
+        #Detect the obstacles taking into account thymio pose
+        obstacles, mask_cleaned = _detect_obstacles(
+            stable_frame,
+            min_area=self.min_obstacle_area,
+            robot_radius=self.robot_radius_px,
+            thymio_pose=thymio_pose,
+        )
+        return obstacles, mask_cleaned
+
+    #Drawing method
+
+    def draw(self, frame, thymio_pose, goal_pos, obstacles):
+        """
+        Draws all detections to visualize everything on a frame.
+        """
+        _draw_all_detections(frame, thymio_pose, goal_pos, obstacles)
+        return frame
+
+    #Release camera method
+
+    def release(self):
+        """Releases camera and destroy OpenCV windows."""
+        if self.cap is not None:
+            self.cap.release()
+            self.cap = None
+        cv2.destroyAllWindows()

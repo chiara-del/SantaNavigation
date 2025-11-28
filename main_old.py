@@ -1,6 +1,6 @@
 import cv2
 import numpy as np
-from vision_utils import Vision
+import vision_utils_old as vu
 import pathplanning_utils as pu
 import control_utils as cu
 import sys
@@ -15,11 +15,12 @@ CAMERA_HEIGHT = 1080
 MAP_WIDTH = 700
 MAP_HEIGHT = 500
 MATRIX_FILE_PATH = "calibration_matrix.npy"
+
 THYMIO_MARKER_ID = 0
 GOAL_MARKER_ID = 1
 
 # Measurements
-ROBOT_RADIUS_PX = 95 
+ROBOT_RADIUS_PX = 76 
 MIN_OBSTACLE_AREA = 100
 
 # Control Settings
@@ -36,9 +37,13 @@ OBSTACLE_AVOIDANCE = 1
 KIDNAPPING_THRESHOLD_PX = 60  # If robot is >60px from target, re-plan
 MAX_BLIND_DURATION = 0.5      # Seconds to keep driving without vision
 
+def transform_point(point, matrix):
+    point_np = np.array([[[point[0], point[1]]]], dtype=np.float32)
+    transformed = cv2.perspectiveTransform(point_np, matrix)
+    return (int(transformed[0][0][0]), int(transformed[0][0][1]))
 
 async def main():
-    # Robot Connection
+    # --- 1. ROBOT CONNECTION (Explicit Method) ---
     client = ClientAsync()    
     print("Waiting for Thymio node...")
     node = await client.wait_for_node()
@@ -52,24 +57,44 @@ async def main():
     await node.wait_for_variables({"prox.horizontal"})
     state = FOLLOW_PATH          # 0=follow path, 1=obstacle avoidance
 
-    # Vision Setup
-    vision = Vision(
-        camera_index=CAMERA_INDEX,
-        cam_width=CAMERA_WIDTH,
-        cam_height=CAMERA_HEIGHT,
-        map_width=MAP_WIDTH,
-        map_height=MAP_HEIGHT,
-        matrix_file_path=MATRIX_FILE_PATH,
-        thymio_marker_id=THYMIO_MARKER_ID,
-        goal_marker_id=GOAL_MARKER_ID,
-        robot_radius_px=ROBOT_RADIUS_PX,
-        min_obstacle_area=MIN_OBSTACLE_AREA,
-    )
+    # --- 2. CAMERA SETUP ---
+    cap = vu.setup_camera(CAMERA_INDEX, CAMERA_WIDTH, CAMERA_HEIGHT)
     
-    # Detect the obstacles
-    obstacle_contours, obstacle_mask = vision.detect_obstacles()
+    # Safety check if camera failed
+    if cap is None: 
+        await node.unlock()
+        return
+
+    matrix = vu.load_transform_matrix(MATRIX_FILE_PATH)
+    if matrix is None:
+        matrix = vu.perspective_calibration(cap, MAP_WIDTH, MAP_HEIGHT, MATRIX_FILE_PATH)
+    
+    # Detect obstacles using a stable frame
+    # Warm up camera
+    for _ in range(5):
+        cap.read()
+    # Collect stable frames
+    frames = []
+    for _ in range(5):
+        ret, f = cap.read()
+        frames.append(f)
+        await asyncio.sleep(0.05)
+    # Average them to reduce noise & flicker
+    stable_frame = np.median(np.stack(frames), axis=0).astype(np.uint8)
+    top_down_map = cv2.warpPerspective(stable_frame, matrix, (MAP_WIDTH, MAP_HEIGHT))
+    
+    # Try to detect the Thymio in the stable frame (in camera space)
+    all_poses_init = vu.detect_aruco_markers(stable_frame)
+    thymio_pose_init = None
+    if THYMIO_MARKER_ID in all_poses_init:
+        raw_pt, angle = all_poses_init[THYMIO_MARKER_ID]
+        map_pt = transform_point(raw_pt, matrix)
+        thymio_pose_init = (map_pt, angle)
+    #Find obstacles and ignore thymio
+    obstacle_contours, obstacle_mask = vu.detect_obstacles(top_down_map, MIN_OBSTACLE_AREA, ROBOT_RADIUS_PX, thymio_pose_init)
 
     print("\nInitialization complete. Starting main localization loop...")
+    print("Kidnapping recovery enabled.")
     print("Press 'q' to quit.")
     
     calculated_path = None
@@ -81,22 +106,36 @@ async def main():
 
     try:
         while True:
-            #Vision: get warped frame
-            top_down_map = vision.get_warped_frame()
-
-            # Get sensor values
+            ret, frame = cap.read()
+            if not ret:
+                print("Error: Failed to grab frame. Exiting...")
+                break
+            
+           # Get values of sensors
             vals = list(node["prox.horizontal"])
             obst_left, obst_right = vals[0], vals[4]
             obst = [obst_left, obst_right]  # measurements from left and right prox sensors
+
+            # --- VISION ---
+            all_poses_raw = vu.detect_aruco_markers(frame)
+            top_down_map = cv2.warpPerspective(frame, matrix, (MAP_WIDTH, MAP_HEIGHT))
+
+            # Commented this to only detect obstacles at  the start
+            # obstacle_contours, obstacle_mask = vu.detect_obstacles(
+            #      top_down_map, 
+            #      MIN_OBSTACLE_AREA, 
+            #      ROBOT_RADIUS_PX
+            #  )
             
             # --- STATE ESTIMATION (Handle Lost Position) ---
             current_time = time.time()
             thymio_pose = None
             
             # Check for Thymio Marker
-            th_pose = vision.get_thymio_pose(top_down_map)
-            if th_pose is not None:
-                thymio_pose = th_pose
+            if THYMIO_MARKER_ID in all_poses_raw:
+                raw_pt, angle = all_poses_raw[THYMIO_MARKER_ID]
+                map_pt = transform_point(raw_pt, matrix)
+                thymio_pose = (map_pt, angle)
                 
                 # Update "Memory"
                 last_valid_pose = thymio_pose
@@ -113,9 +152,9 @@ async def main():
 
             # Check for Goal Marker
             goal_position = None
-            g_pose = vision.get_goal_pos(top_down_map)
-            if g_pose is not None:
-                goal_position = g_pose
+            if GOAL_MARKER_ID in all_poses_raw:
+                raw_pt, _ = all_poses_raw[GOAL_MARKER_ID]
+                goal_position = transform_point(raw_pt, matrix)
 
             # --- PLANNING & DYNAMIC RE-PLANNING (Handle Kidnapping) ---
             should_plan = False
@@ -212,7 +251,9 @@ async def main():
                     target = calculated_path[current_waypoint_index]
                     cv2.circle(top_down_map, (int(target[0]), int(target[1])), 8, (0, 0, 255), -1)
 
-            vision.draw(top_down_map, thymio_pose, goal_position, obstacle_contours)
+            vu.draw_all_detections(
+                top_down_map, thymio_pose, goal_position, obstacle_contours
+            )
             cv2.imshow("Top-Down Map", top_down_map)
             cv2.imshow("Obstacle Mask", obstacle_mask)
 
@@ -225,7 +266,7 @@ async def main():
         print("Stopping robot...")
         await robot.stop()
         await node.unlock() # Unlock explicitly
-        vision.release()
+        cap.release()
         cv2.destroyAllWindows()
         print("Done!")
 
