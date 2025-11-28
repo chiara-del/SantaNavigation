@@ -19,7 +19,6 @@ THYMIO_MARKER_ID = 0
 GOAL_MARKER_ID = 1
 
 # Measurements
-ROBOT_RADIUS_PX = 95 
 MIN_OBSTACLE_AREA = 100
 
 # Control Settings
@@ -62,7 +61,6 @@ async def main():
         matrix_file_path=MATRIX_FILE_PATH,
         thymio_marker_id=THYMIO_MARKER_ID,
         goal_marker_id=GOAL_MARKER_ID,
-        robot_radius_px=ROBOT_RADIUS_PX,
         min_obstacle_area=MIN_OBSTACLE_AREA,
     )
     

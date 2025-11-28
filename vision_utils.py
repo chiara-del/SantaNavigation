@@ -257,7 +257,6 @@ class Vision:
         matrix_file_path,
         thymio_marker_id=None,
         goal_marker_id=None,
-        robot_radius_px=66,
         min_obstacle_area=200,
     ):
         self.camera_index = camera_index
@@ -269,7 +268,6 @@ class Vision:
 
         self.thymio_marker_id = thymio_marker_id
         self.goal_marker_id = goal_marker_id
-        self.robot_radius_px = robot_radius_px
         self.min_obstacle_area = min_obstacle_area
 
         #Opens the camera and sets parameters
@@ -280,14 +278,27 @@ class Vision:
         if self.matrix is None:
             print("No existing matrix found, running calibration...")
             self.matrix = _perspective_calibration(self.cap, self.map_width, self.map_height, self.matrix_file_path)
+        
+        #Compute the robot radius in pixels using known distance between corner arucos
+        self._init_robot_radius_px()
 
-    #Warping method
+    #Scale calculation method
 
-    def transform_point(self, point):
-        point_np = np.array([[[point[0], point[1]]]], dtype=np.float32)
-        transformed = cv2.perspectiveTransform(point_np, self.matrix)
-        return (int(transformed[0][0][0]), int(transformed[0][0][1]))
+    ###################################################################################
+    ########## !!!! CHANGE DISTANCES TO 100 70 WHEN WE USE TOTAL MAP !!!! #############
+    ###################################################################################
 
+    def _init_robot_radius_px(self):
+        """Compute the thymio's radius in pixels using known corner distances"""
+        robot_radius_cm = 7 # Actual thymio radius from center of aruco
+        aruco_corner_width_cm = 70 #Distance between centers of arucos from top-left to bottom-left corners.
+        aruco_corner_height_cm = 50 #Distance between centers of arucos from top-left to top_right corners.
+        px_per_cm_height = float(self.map_height)/aruco_corner_height_cm #Compute height px/cm scale
+        px_per_cm_width = float(self.map_width)/aruco_corner_width_cm #Compute width px/cm scale
+        px_per_cm = 0.5 * (px_per_cm_height + px_per_cm_width) #Compute average scale
+
+        self.robot_radius_px = robot_radius_cm * px_per_cm
+        
     #Frame access methods
 
     def get_raw_frame(self):
