@@ -208,7 +208,7 @@ async def main():
                     target = calculated_path[current_waypoint_index]
                     cv2.circle(top_down_map, (int(target[0]), int(target[1])), 8, (0, 0, 255), -1)
 
-            vision.draw(top_down_map, thymio_pose, goal_position, obstacle_contours)
+            vision.draw(top_down_map, obstacle_contours, thymio_pose, goal_position)
             cv2.imshow("Top-Down Map", top_down_map)
             cv2.imshow("Obstacle Mask", obstacle_mask)
 
