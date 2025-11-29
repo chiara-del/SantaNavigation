@@ -37,6 +37,7 @@ cv2.setTrackbarPos("S_max", "HSV Tuner", 25)  # Good start for S_max (for white)
 # Setup camera or load image
 if USE_WEBCAM:
     cap = cv2.VideoCapture(CAMERA_INDEX, cv2.CAP_DSHOW)
+    #cap = cv2.VideoCapture(1, cv2.CAP_AVFOUNDATION) #For mac iphone camera
 else:
     # Load the image once
     image = cv2.imread(IMAGE_PATH)

@@ -200,8 +200,8 @@ def _detect_obstacles(frame, min_area, robot_radius, thymio_pose = None):
     """
     hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV) #Convert the frame color scale from BGR to HSV
     #Define the ranges for obstacle color
-    lower_red = np.array([0, 160, 64])
-    upper_red = np.array([20, 255, 255])
+    lower_red = np.array([146, 142, 0])
+    upper_red = np.array([179, 255, 255])
     #Create masks to detect pixels in these color ranges and combine them in one mask
     mask = cv2.inRange(hsv, lower_red, upper_red)
     #Remove noise by shrinking and expanding white regions
@@ -334,7 +334,10 @@ class Vision:
         if frame is None:
             frame = self.get_warped_frame()
         arucos = self.detect_markers(frame)
-        return arucos.get(self.thymio_marker_id)
+        thymio_pose = arucos.get(self.thymio_marker_id)
+        if thymio_pose is None:
+            return None
+        return thymio_pose
 
     def get_goal_pos(self, frame=None):
         """
