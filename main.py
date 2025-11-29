@@ -90,10 +90,8 @@ async def main():
             thymio_pose = None
             
             # Check for Thymio Marker
-            th_pose = vision.get_thymio_pose(top_down_map)
-            if th_pose is not None:
-                thymio_pose = th_pose
-                
+            thymio_pose = vision.get_thymio_pose(top_down_map)
+            if thymio_pose is not None:
                 # Update "Memory"
                 last_valid_pose = thymio_pose
                 last_valid_time = current_time
@@ -108,10 +106,7 @@ async def main():
                     thymio_pose = None
 
             # Check for Goal Marker
-            goal_position = None
-            g_pose = vision.get_goal_pos(top_down_map)
-            if g_pose is not None:
-                goal_position = g_pose
+            goal_position = vision.get_goal_pos(top_down_map)
 
             # --- PLANNING & DYNAMIC RE-PLANNING (Handle Kidnapping) ---
             should_plan = False
