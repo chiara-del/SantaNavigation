@@ -17,8 +17,6 @@ MAP_HEIGHT = 500
 MATRIX_FILE_PATH = "calibration_matrix.npy"
 THYMIO_MARKER_ID = 0
 GOAL_MARKER_ID = 1
-
-# Measurements
 MIN_OBSTACLE_AREA = 100
 
 # Control Settings

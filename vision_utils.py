@@ -220,7 +220,7 @@ def _detect_obstacles(frame, min_area, robot_radius, thymio_pose = None):
     return valid_contours, mask_cleaned
 
 
-def _draw_all_detections(frame, thymio_pose, goal_pos, obstacles):
+def _draw_all_detections(frame, obstacles=None, thymio_pose=None, goal_pos=None):
     """
     Draws all detected elements onto the display frame.
     """
@@ -234,13 +234,12 @@ def _draw_all_detections(frame, thymio_pose, goal_pos, obstacles):
         cv2.putText(frame, "Thymio", 
                     (pos[0] + 15, pos[1]), 
                     cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 255), 1) #Adds text "Thymio"
-
     if goal_pos is not None:
         cv2.circle(frame, goal_pos, 15, (255, 0, 0), -1) #blue dot at the goal position
         cv2.putText(frame, "Goal", (goal_pos[0] + 15, goal_pos[1]), 
                     cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 0, 0), 1) #Adds text "Goal"
-    cv2.drawContours(frame, obstacles, -1, (0, 0, 255), 2) #displays the obstacles dilated contours
-
+    if obstacles is not None and len(obstacles) > 0:
+        cv2.drawContours(frame, obstacles, -1, (0, 0, 255), 2) #displays the obstacles dilated contours
 
 
 #Vision Class Definition
@@ -276,7 +275,7 @@ class Vision:
         # Use existing helper to load / compute matrix
         self.matrix = _load_transform_matrix(self.matrix_file_path)
         if self.matrix is None:
-            print("No existing matrix found, running calibration...")
+            print("Running calibration...")
             self.matrix = _perspective_calibration(self.cap, self.map_width, self.map_height, self.matrix_file_path)
         
         #Compute the robot radius in pixels using known distance between corner arucos
@@ -382,11 +381,11 @@ class Vision:
 
     #Drawing method
 
-    def draw(self, frame, thymio_pose, goal_pos, obstacles):
+    def draw(self, frame, obstacles=None, thymio_pose=None, goal_pos=None):
         """
         Draws all detections to visualize everything on a frame.
         """
-        _draw_all_detections(frame, thymio_pose, goal_pos, obstacles)
+        _draw_all_detections(frame, obstacles, thymio_pose, goal_pos)
         return frame
 
     #Release camera method
