@@ -1,13 +1,12 @@
 import math
 
 class ThymioController:
+    """Wrapper to handle Thymio motor commands via the node."""
     def __init__(self, node):
         self.node = node
 
     async def stop(self):
-        if self.node:
-            v = {"motor.left.target": [0], "motor.right.target": [0]}
-            await self.node.set_variables(v)
+        await self.set_motors(0, 0)
 
     async def set_motors(self, left, right):
         if self.node:
@@ -17,24 +16,62 @@ class ThymioController:
             }
             await self.node.set_variables(v)
 
-# ... (Keep calculate_control_command and check_waypoint_reached unchanged) ...
-# ... (Copy them from previous responses if needed) ...
-def calculate_control_command(robot_pos, robot_angle, target_pos, base_speed=100, k_p=2.0):
-    rx, ry = robot_pos
-    tx, ty = target_pos
-    dx = tx - rx
-    dy = ty - ry
-    target_angle_rad = math.atan2(dx, -dy)
-    target_angle_deg = math.degrees(target_angle_rad)
-    angle_error = target_angle_deg - robot_angle
-    angle_error = (angle_error + 180) % 360 - 180
-    turn_speed = angle_error * k_p
-    left_speed = base_speed + turn_speed
-    right_speed = base_speed - turn_speed
-    left_speed = max(min(left_speed, 500), -500)
-    right_speed = max(min(right_speed, 500), -500)
-    return left_speed, right_speed
+class PathFollower:
+    """Manages the state of path following."""
+    def __init__(self, speed=100, gain=3.0, reach_threshold=30):
+        self.threshold = reach_threshold
+        self.speed = speed
+        self.gain = gain
+        self.path = None
+        self.current_idx = 0  # <--- This matches main.py
 
-def check_waypoint_reached(robot_pos, target_pos, threshold=20):
-    dist = math.hypot(robot_pos[0] - target_pos[0], robot_pos[1] - target_pos[1])
-    return dist < threshold
+    def set_path(self, path):
+        self.path = path
+        self.current_idx = 1 # Start at index 1 (0 is current robot pos)
+
+    def get_command(self, robot_pose):
+        """
+        Returns (left_speed, right_speed, goal_reached_bool).
+        """
+        if not self.path or self.current_idx >= len(self.path):
+            return 0, 0, True # Reached / No Path
+
+        target = self.path[self.current_idx]
+        robot_xy = robot_pose[0]
+        robot_angle = robot_pose[1]
+
+        # Check if reached waypoint
+        dist = math.hypot(robot_xy[0] - target[0], robot_xy[1] - target[1])
+        if dist < self.threshold:
+            self.current_idx += 1
+            if self.current_idx >= len(self.path):
+                return 0, 0, True # Just reached goal
+            target = self.path[self.current_idx]
+
+        # Calculate P-Control
+        dx = target[0] - robot_xy[0]
+        dy = target[1] - robot_xy[1]
+        
+        target_angle = math.degrees(math.atan2(dx, -dy))
+        error = (target_angle - robot_angle + 180) % 360 - 180
+        
+        turn = error * self.gain
+        left = int(max(min(self.speed + turn, 500), -500))
+        right = int(max(min(self.speed - turn, 500), -500))
+        
+        return left, right, False
+
+def calculate_avoidance_commands(prox, speed, gain):
+    """Calculates Local Avoidance command (Braitenberg)."""
+    # Left: 0,1,2. Right: 2,3,4
+    left_stim = prox[0]*1.0 + prox[1]*0.8 + prox[2]*0.2
+    right_stim = prox[4]*1.0 + prox[3]*0.8 + prox[2]*0.2
+    
+    turn = (left_stim - right_stim) * gain
+    
+    # Slow down if very close (Safety)
+    if max(prox) > 3500: speed = 0 
+    
+    left = int(max(min(speed + turn, 500), -500))
+    right = int(max(min(speed - turn, 500), -500))
+    return left, right
