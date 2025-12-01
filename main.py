@@ -7,6 +7,7 @@ import sys
 import asyncio
 import time
 from tdmclient import ClientAsync
+from kalmann_filter import EKF2D
 
 # --- CONFIG ---
 CFG = { "CAM": 1, "RES": (1920, 1080), "MAP": (700, 500), "MTX": "calibration_matrix.npy",
@@ -41,6 +42,13 @@ async def main():
                        *CFG["IDS"], CFG["AREA"], CFG["RAD"])
     if not vision.cap: 
         await node.unlock(); return
+    
+    #EKF init 
+    Ts=0.01
+    ekf = EKF2D(Ts=Ts,q_pos=0.2,q_vel=8.0,r_cam_posx=6.0, r_cam_posy=6.0, r_vel_cam_derived=120.0)
+    seeded = False 
+    last_cam = None # ((px,py),t) for velocity from camera
+
 
     # --- 2. ROBUST MAPPING (The Fix) ---
     print("Camera Warmup (2 seconds)...")
@@ -78,16 +86,50 @@ async def main():
             if frame is None: break
             prox = list(node["prox.horizontal"])
             
+            #Predict EKF every loop 
+            ekf.predict()
+
             # POSE
             pose = vision.get_thymio_pose(frame)
             if pose: last_pose, last_time = pose, time.time()
             elif time.time() - last_time < CFG["BLIND"]: pose = last_pose
             else: pose = None
 
+            #EKF updates from camera
+            if pose:
+                (px,py), _ = pose
+
+                #seed EKF on first valid pose 
+                if not seeded:
+                    ekf.x[:] = [px, py, 0.0, 0.0]
+                    seeded = True
+            
+            #Position update 
+            ekf.update_cam_pos(px,py)
+
+            #Velocity from camera update
+            if last_cam is not None:
+                (px_prev,py_prev), t_prev = last_cam
+                dt= time.time()-t_prev
+                if dt > 1e-3:
+                    vx = (px - px_prev) / dt
+                    vy = (py - py_prev) / dt
+                    ekf.update_vel_cam(vx, vy)
+            
+            last_cam = ((px,py), time.time())
+
+            #choose pose for planner/control: EKF is seeded, else raw
+            if seeded:
+                x_hat, P_hat = ekf.get_state()
+                ekf_pose = ((x_hat[0], x_hat[1]), None)
+                pose_for_planner = ekf_pose
+            else:
+                pose_for_planner=pose
+
             goal = vision.get_goal_pos(frame)
 
             # PLANNING
-            if pose and goal:
+            if pose_for_planner and goal:
                 needs_plan = False
                 if not follower.path: needs_plan = True
                 elif follower.path and state == 0:
@@ -111,7 +153,7 @@ async def main():
             # CONTROL
             if pose:
                 if state == 0: # Global
-                    l, r, done = follower.get_command(pose)
+                    l, r, done = follower.get_command(pose_for_planner)
                     if done: print("Goal!"); follower.path = None
                     await robot.set_motors(l, r)
                 else: # Local
@@ -126,6 +168,13 @@ async def main():
             status_text = "GLOBAL" if state == 0 else "LOCAL AVOIDANCE"
             color = (0, 255, 0) if state == 0 else (0, 0, 255)
             cv2.putText(frame, status_text, (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 1, color, 2)
+            cv2.imshow("Map", frame)
+
+            #Draw EKF state explicitly (blue dot)
+            if seeded:
+                ex, ey = int(ekf.x[0]), int(ekf.x[1])
+                cv2.circle(frame, (ex, ey), 5, (255, 0, 0), -1)
+                cv2.putText(frame, "EKF", (ex+6, ey-6), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255,0,0), 1)
             cv2.imshow("Map", frame)
             
             await asyncio.sleep(0.01)
