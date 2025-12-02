@@ -35,7 +35,6 @@ def _detect_aruco_markers(frame, detector):
             dy = top_mid[1] - bottom_mid[1]
             angle_rad = math.atan2(dx, -dy)
             angle_deg = math.degrees(angle_rad) % 360
-            
             poses[int(marker_id)] = ((int(center_x), int(center_y)), angle_deg)
     return poses
 
@@ -144,7 +143,7 @@ def _detect_obstacles(frame, min_area, robot_radius, thymio_pose=None):
     hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
     
     # Red Thresholds
-    lower_red = np.array([163, 92, 196])
+    lower_red = np.array([166, 87, 220])
     upper_red = np.array([179, 255, 255])
     mask = cv2.inRange(hsv, lower_red, upper_red)
     
@@ -214,7 +213,7 @@ class Vision:
         
         # Auto-calculate radius if not provided
         if self.robot_radius_px is None:
-            px_per_cm = float(self.map_width) / 70.0 
+            px_per_cm = float(self.map_width) / 100.0 
             self.robot_radius_px = 7 * px_per_cm
 
     def _load_or_calibrate(self):
