@@ -66,12 +66,10 @@ def calculate_avoidance_commands(prox, speed, gain):
     # Left: 0,1,2. Right: 2,3,4
     left_stim = prox[0]*1.0 + prox[1]*0.8 + prox[2]*0.2
     right_stim = prox[4]*1.0 + prox[3]*0.8 + prox[2]*0.2
-    
-    turn = (left_stim - right_stim) * gain
-    
+    left = speed + gain * (left_stim//100)  
+    right = speed + gain * (right_stim//100)
+
     # Slow down if very close (Safety)
     if max(prox) > 3500: speed = 0 
-    
-    left = int(max(min(speed + turn, 500), -500))
-    right = int(max(min(speed - turn, 500), -500))
+
     return left, right

@@ -14,7 +14,7 @@ from ekf_pose import EKFPose   # <- classe ci-dessus
 CFG = {
     "CAM": 1, "RES": (1920, 1080), "MAP": (1000, 700), "MTX": "calibration_matrix.npy",
     "IDS": (0, 1), "AREA": 100, "RAD": 41, "PX_CM": 7.3,
-    "THRESH": (1000, 2000), "GAIN": 0.06, "BLIND": 0.5, "KIDNAP": 60
+    "THRESH": (600, 1000), "GAIN": 0.06, "BLIND": 0.5, "KIDNAP": 60
 }
 
 def check_kidnapping(pose, target, path, prev_idx, threshold):
@@ -184,7 +184,7 @@ async def main():
                         follower.path = None
                     await robot.set_motors(l, r)
                 else:
-                    l, r = cu.calculate_avoidance_commands(prox, 50, CFG["GAIN"])
+                    l, r = cu.calculate_avoidance_commands(prox, 50, 2.0)
                     await robot.set_motors(l, r)
             else:
                 await robot.stop()
