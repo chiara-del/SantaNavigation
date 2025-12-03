@@ -278,25 +278,13 @@ def draw_covariance_ellipse(frame, P, mm_per_px, scale_factor=3.0):
     # Multiplier to make small errors visible to the human eye
     VISUAL_GAIN = 10.0 
     
-    # Extract 2x2 XY covariance
-    cov_xy = P[0:2, 0:2]
-    
-    # Eigenvalues for ellipse shape
-    vals, vecs = np.linalg.eigh(cov_xy)
-    vals[vals < 0] = 0 # Sanitize negative eigenvalues
-    
-    # Sort descending
-    order = vals.argsort()[::-1]
-    vals = vals[order]
-    vecs = vecs[:, order]
-    
     # Calculate Angle of the XY error
-    angle = np.degrees(np.arctan2(vecs[1, 0], vecs[0, 0]))
+    angle = np.degrees(np.arctan2(P[1,1], P[0, 0]))
     
     # Calculate Axis Lengths (3-sigma * visual_gain)
     # We apply VISUAL_GAIN here to make it huge enough to see
-    width = 2 * scale_factor * np.sqrt(vals[0]) / mm_per_px * VISUAL_GAIN
-    height = 2 * scale_factor * np.sqrt(vals[1]) / mm_per_px * VISUAL_GAIN
+    width = 2 * scale_factor * np.sqrt(P[0,0]) / mm_per_px * VISUAL_GAIN
+    height = 2 * scale_factor * np.sqrt(P[1,1]) / mm_per_px * VISUAL_GAIN
     
     # Clamp minimum size so it doesn't vanish
     width = max(20, width) 
@@ -309,7 +297,7 @@ def draw_covariance_ellipse(frame, P, mm_per_px, scale_factor=3.0):
         # --- DRAW XY ELLIPSE (Blue) ---
         # We draw a filled semi-transparent ellipse if possible, but OpenCV
         cv2.ellipse(frame, fixed_center, (int(width/2), int(height/2)), 
-                    int(angle), 0, 360, (255, 100, 0), 2)
+                     int(angle), 0, 360, (255, 100, 0), 2)
         
         # --- DRAW THETA UNCERTAINTY (Yellow Wedge) ---
         var_theta = P[2, 2]

@@ -46,12 +46,14 @@ async def motion_profile(node, total_time):
     t0 = time.time()
     try:
         while time.time() - t0 < total_time:
-            await set_motors(node, 10, 10); await asyncio.sleep(2.0)  # droit moyen
-            await set_motors(node, 90, 90); await asyncio.sleep(2.0)  # droit rapide
-            await set_motors(node, 10, 90); await asyncio.sleep(2.0)  # virage gauche
-            await set_motors(node, 90, 10); await asyncio.sleep(2.0)  # virage droit
-            await set_motors(node, 5, 5); await asyncio.sleep(2.0)  # droit lent
-            await set_motors(node, 0, 0);     await asyncio.sleep(0.8)  # pause
+            await set_motors(node, 30, 30); await asyncio.sleep(4.0)  # droit moyen
+            await set_motors(node, 90, 90); await asyncio.sleep(4.0)  # droit rapide
+            await set_motors(node, -100, 100); await asyncio.sleep(2.3)  # virage gauche
+            await set_motors(node, 30, 30); await asyncio.sleep(4.0)  # droit moyen
+            await set_motors(node, 90, 90); await asyncio.sleep(4.0)  # droit rapide
+            await set_motors(node, 100, -100); await asyncio.sleep(2.3)  # virage droit
+            await set_motors(node, 0, 0); await asyncio.sleep(0.8)  # pause
+
     finally:
         await set_motors(node, 0, 0)
 

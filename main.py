@@ -47,11 +47,11 @@ async def main():
     ekf = EKFPose(
         Ts=Ts,
         # Q (process): à affiner avec tes estimations converties
-        q_x=32.813, q_y=0.001, q_theta=4e-3, q_v=1817.0,
+        q_x=12, q_y=12, q_theta=2.752e-03 , q_v=53.604 ,
         # R (measure): idem
-        r_pos_x=0.208, r_pos_y=0.0,                # mm^2
-        r_theta=3.817e-06,                # rad^2
-        r_v=57.402                                  # (mm/s)^2
+        r_pos_x=0.375, r_pos_y=0.000,                # mm^2
+        r_theta=2.229e-06,                # rad^2
+        r_v=156.739                                  # (mm/s)^2
     )
     seeded = False
 
