@@ -7,7 +7,6 @@ import asyncio
 import time
 import math
 from tdmclient import ClientAsync
-
 from ekf_pose import EKFPose   # <- classe ci-dessus
 
 # --- CONFIG ---
@@ -18,7 +17,7 @@ CFG = {
 }
 
 async def main():
-    # 1) CONNECT
+    #1) Connect to Thymio
     client = ClientAsync()
     try:
         print("Waiting for Thymio...")
@@ -35,13 +34,14 @@ async def main():
     robot = cu.ThymioController(node)
     follower = cu.PathFollower(speed=100, gain=2.5)
 
+    #2) Initialize Vision
     vision = vu.Vision(CFG["CAM"], *CFG["RES"], *CFG["MAP"], CFG["MTX"],
                        *CFG["IDS"], CFG["AREA"])
     if not vision.cap:
         await node.unlock()
         return
 
-    # 2) EKF INIT (units: mm, mm/s, rad)
+    #3) EKF initialization (units: mm, mm/s, rad)
     Ts = 0.01
     mm_per_px = 10.0/(vision.px_per_cm)   # mm/px 
     ekf = EKFPose(
@@ -60,7 +60,7 @@ async def main():
     b_mm = 95.0                          # track width (mm) à mesurer
     omega_scale = SPEED_TO_MMS / b_mm    # rad/s per (Thymio unit)
 
-    # 3) CAMERA WARMUP + STATIC MAP
+    #4) Obstacle Detection
     print("Camera Warmup (2 seconds)...")
     warmup_end = time.time() + 2.0
     while time.time() < warmup_end:
@@ -75,11 +75,11 @@ async def main():
     debug_view = cv2.cvtColor(mask, cv2.COLOR_GRAY2BGR)
     cv2.putText(debug_view, "Initial Map Snapshot", (10,30), cv2.FONT_HERSHEY_SIMPLEX, 1, (0,255,0), 2)
     cv2.imshow("Map", debug_view)
-    cv2.waitKey(1000)
+    cv2.waitKey(1500)
 
-    # 4) LOOP
+    # 5) Main Loop
     print("Running... Press 'q' to quit.")
-    state, last_pose, last_time = 0, None, time.time()  # 0=Global, 1=Local
+    state = 0  # 0=Global, 1=Local
 
     try:
         while True:
@@ -99,20 +99,12 @@ async def main():
             # EKF predict with u
             ekf.predict(u)
 
-            # Pose from vision
+            # Get Thymio pose from vision
             pose = vision.get_thymio_pose(frame)
-            #now = time.time()
-            # if pose:
-            #     last_pose, last_time = pose, now
-            # elif now - last_time < CFG["BLIND"]:
-            #     pose = last_pose
-            # else:
-            #     pose = None
 
             # EKF updates (position + theta)
             if pose:
                 (px, py), angle_deg = pose
-                print("1",angle_deg)
                 x_mm = px * mm_per_px
                 y_mm = py * mm_per_px
                 theta_rad = math.radians(angle_deg)
@@ -123,8 +115,7 @@ async def main():
 
                 ekf.update_pos(x_mm, y_mm)
                 ekf.update_theta(theta_rad)
-                # Optionnel: recaler v aussi (sinon déjà injecté via u)
-                # ekf.update_v(v_meas)
+
             # Planner/control pose (convert back to pixels)
             if seeded:
                 x_hat, P_hat = ekf.get_state()
@@ -132,10 +123,10 @@ async def main():
                 py_hat = int(x_hat[1] / mm_per_px)
                 theta_hat = (math.degrees(x_hat[2]))%360
                 pose_for_planner = ((px_hat, py_hat), theta_hat)
-                print("2", theta_hat)
-                #print(pose_for_planner)
             else:
                 pose_for_planner = pose
+
+            #Get Goal Position from vision
             goal = vision.get_goal_pos(frame)
 
             # Planning
@@ -181,26 +172,30 @@ async def main():
             else:
                 await robot.stop()
 
-            # Visualization (draw EKF pose in blue)
-            vision.draw(frame, obs_contours, pose_for_planner, goal, follower.path, follower.current_idx)
-            # Visualization (Draw Uncertainty Ellipse)
-            if seeded:
-                # Get current covariance P from EKF
-                _, P_hat = ekf.get_state()
-                # Draw it (fixed to bottom-left)
-                vu.draw_covariance_ellipse(frame, P_hat, mm_per_px)
-            
+            # Visualization
+            # Main map Visualization
             status_text = "GLOBAL" if (state == 0) else "LOCAL AVOIDANCE"
-            color = (0, 255, 0) if state == 0 else (0, 0, 255)
-            cv2.putText(frame, status_text, (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 1, color, 2)
-            if seeded:
-                ex, ey = int(px_hat), int(py_hat)
-                cv2.circle(frame, (ex, ey), 5, (255, 0, 0), -1)
-                cv2.putText(frame, "EKF", (ex+6, ey-6), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255,0,0), 1)
+            vision.draw(frame = frame,
+                        obstacles = obs_contours, 
+                        pose = pose, 
+                        kalman_pose = pose_for_planner, 
+                        goal = goal, 
+                        path = follower.path, 
+                        path_idx = follower.current_idx, 
+                        state_text = status_text,
+                        )
             cv2.imshow("Map", frame)
 
+            # Kalman Visualization
+            kalman_var = np.ones((400, 400, 3), dtype=np.uint8) * 255
+            cv2.namedWindow("KalmanVariance", cv2.WINDOW_NORMAL)
+            cv2.resizeWindow("KalmanVariance", 400, 400)
+            if seeded:
+                ekf.draw_covariance_ellipse(kalman_var, mm_per_px)
+            cv2.imshow("KalmanVariance", kalman_var)
+
+
             await asyncio.sleep(Ts)
-            #print(time.perf_counter() - a)
             if cv2.waitKey(1) & 0xFF == ord('q'):
                 break
 

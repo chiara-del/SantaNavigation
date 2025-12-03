@@ -162,7 +162,7 @@ def _detect_obstacles(frame, min_area, robot_radius, thymio_pose=None):
     
     return expanded_polygons, mask_cleaned
 
-def _draw_all_detections(frame, obstacles=None, thymio_pose=None, goal_pos=None):
+def _draw_all_detections(frame, obstacles=None, thymio_pose=None, kalman_pose=None, goal_pos=None):
     """
     Draws all detected elements onto the display frame.
     """
@@ -173,9 +173,11 @@ def _draw_all_detections(frame, obstacles=None, thymio_pose=None, goal_pos=None)
         end_x = int(pos[0] + 30 * math.sin(angle_rad))
         end_y = int(pos[1] - 30 * math.cos(angle_rad))
         cv2.arrowedLine(frame, pos, (end_x, end_y), (0, 255, 255), 2) #Draw yellow arrow to visualize orientation
-        cv2.putText(frame, "Thymio", 
-                    (pos[0] + 15, pos[1]), 
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 255), 1) #Adds text "Thymio"
+    if kalman_pose is not None:
+        cv2.circle(frame, kalman_pose[0], 5, (255, 0, 0), -1)
+        cv2.putText(frame, "EKF", (kalman_pose[0][0]+6, kalman_pose[0][1]-6), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255,0,0), 1)
+
+
     if goal_pos is not None:
         cv2.circle(frame, goal_pos, 15, (255, 0, 0), -1) #blue dot at the goal position
         cv2.putText(frame, "Goal", (goal_pos[0] + 15, goal_pos[1]), 
@@ -251,9 +253,9 @@ class Vision:
         pose = self.get_thymio_pose(stable_frame)
         return _detect_obstacles(stable_frame, self.min_area, self.robot_radius_px, pose)
 
-    def draw(self, frame, obstacles=None, pose=None, goal=None, path=None, path_idx=0, state_text=""):
+    def draw(self, frame, obstacles=None, pose=None, kalman_pose = None, goal=None, path=None, path_idx=0, state_text=""):
         # We call the exact function you requested
-        _draw_all_detections(frame, obstacles, pose, goal)
+        _draw_all_detections(frame, obstacles, pose, kalman_pose, goal)
         
         # We add the path drawing here since it wasn't in your snippet
         if path:
@@ -271,66 +273,3 @@ class Vision:
         if self.cap: self.cap.release()
         cv2.destroyAllWindows()
 
-def draw_covariance_ellipse(frame, P, mm_per_px, scale_factor=3.0):
-    """
-    Draws the XY uncertainty ellipse and Theta uncertainty wedge.
-    """
-    # Multiplier to make small errors visible to the human eye
-    VISUAL_GAIN = 10.0 
-    
-    # Calculate Angle of the XY error
-    angle = np.degrees(np.arctan2(P[1,1], P[0, 0]))
-    
-    # Calculate Axis Lengths (3-sigma * visual_gain)
-    # We apply VISUAL_GAIN here to make it huge enough to see
-    width = 2 * scale_factor * np.sqrt(P[0,0]) / mm_per_px * VISUAL_GAIN
-    height = 2 * scale_factor * np.sqrt(P[1,1]) / mm_per_px * VISUAL_GAIN
-    
-    # Clamp minimum size so it doesn't vanish
-    width = max(20, width) 
-    height = max(20, height)
-    
-    # Fixed Position (Bottom Left)
-    fixed_center = (200, frame.shape[0] - 200)
-    
-    try:
-        # --- DRAW XY ELLIPSE (Blue) ---
-        # We draw a filled semi-transparent ellipse if possible, but OpenCV
-        cv2.ellipse(frame, fixed_center, (int(width/2), int(height/2)), 
-                     int(angle), 0, 360, (255, 100, 0), 2)
-        
-        # --- DRAW THETA UNCERTAINTY (Yellow Wedge) ---
-        var_theta = P[2, 2]
-        if var_theta < 0: var_theta = 0
-        std_theta = np.sqrt(var_theta)
-        
-        # Calculate angular spread (3-sigma)
-        spread_deg = np.degrees(3 * std_theta)
-        
-        # Limit spread for visualization sanity
-        spread_deg = min(spread_deg, 180)
-        
-        # Arrow Length (proportional to ellipse size or fixed)
-        arrow_len = 100
-        
-        # Draw the "Cone" of uncertainty
-        # We assume "Up" (-90 degrees in OpenCV) is the reference direction
-        start_angle = -90 - spread_deg
-        end_angle = -90 + spread_deg
-        
-        # Draw filled arc section
-        cv2.ellipse(frame, fixed_center, (arrow_len, arrow_len), 0, start_angle, end_angle, (0, 255, 255), -1)
-        
-        # Draw the "Mean" Arrow (Center of the cone)
-        p1 = fixed_center
-        p2 = (fixed_center[0], fixed_center[1] - arrow_len)
-        cv2.arrowedLine(frame, p1, p2, (0, 0, 255), 2, tipLength=0.2)
-
-        # --- LABELS ---
-        cv2.putText(frame, f"EKF Uncertainty (x{int(VISUAL_GAIN)})", (fixed_center[0]-100, fixed_center[1]+120), 
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
-        cv2.putText(frame, f"Theta: +/- {spread_deg:.1f} deg", (fixed_center[0]-80, fixed_center[1]+145), 
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 255), 1)
-
-    except Exception as e:
-        print(f"Viz Error: {e}")
