@@ -12,7 +12,7 @@ from ekf_pose import EKFPose   # <- classe ci-dessus
 
 # --- CONFIG ---
 CFG = {
-    "CAM": 1, "RES": (1920, 1080), "MAP": (1000, 700), "MTX": "calibration_matrix.npy",
+    "CAM": 0, "RES": (1920, 1080), "MAP": (1000, 700), "MTX": "calibration_matrix.npy",
     "IDS": (0, 1), "AREA": 100,
     "THRESH": (600, 1000), "GAIN": 0.06, "BLIND": 0.5, "KIDNAP": 60
 }
@@ -47,9 +47,9 @@ async def main():
     ekf = EKFPose(
         Ts=Ts,
         # Q (process): à affiner avec tes estimations converties
-        q_x=12, q_y=12, q_theta=2.752e-03 , q_v=53.604 ,
+        q_x=0.2, q_y=0.2, q_theta=2.752e-03 , q_v=53.604 ,
         # R (measure): idem
-        r_pos_x=0.375, r_pos_y=0.000,                # mm^2
+        r_pos_x=0.00001, r_pos_y=0.00001,                # mm^2
         r_theta=2.229e-06,                # rad^2
         r_v=156.739                                  # (mm/s)^2
     )
@@ -83,6 +83,7 @@ async def main():
 
     try:
         while True:
+            a = time.perf_counter()
             frame = vision.get_warped_frame()
             if frame is None:
                 break
@@ -92,7 +93,7 @@ async def main():
             sL = float(node["motor.left.speed"])
             sR = float(node["motor.right.speed"])
             v_meas = 0.5 * (sL + sR) * SPEED_TO_MMS           # mm/s
-            omega_meas = (sR - sL) * omega_scale              # rad/s
+            omega_meas = -(sR - sL) * omega_scale              # rad/s
             u = np.array([v_meas, omega_meas], float)
 
             # EKF predict with u
@@ -100,17 +101,18 @@ async def main():
 
             # Pose from vision
             pose = vision.get_thymio_pose(frame)
-            now = time.time()
-            if pose:
-                last_pose, last_time = pose, now
-            elif now - last_time < CFG["BLIND"]:
-                pose = last_pose
-            else:
-                pose = None
+            #now = time.time()
+            # if pose:
+            #     last_pose, last_time = pose, now
+            # elif now - last_time < CFG["BLIND"]:
+            #     pose = last_pose
+            # else:
+            #     pose = None
 
             # EKF updates (position + theta)
             if pose:
                 (px, py), angle_deg = pose
+                print("1",angle_deg)
                 x_mm = px * mm_per_px
                 y_mm = py * mm_per_px
                 theta_rad = math.radians(angle_deg)
@@ -123,7 +125,6 @@ async def main():
                 ekf.update_theta(theta_rad)
                 # Optionnel: recaler v aussi (sinon déjà injecté via u)
                 # ekf.update_v(v_meas)
-
             # Planner/control pose (convert back to pixels)
             if seeded:
                 x_hat, P_hat = ekf.get_state()
@@ -131,6 +132,8 @@ async def main():
                 py_hat = int(x_hat[1] / mm_per_px)
                 theta_hat = (math.degrees(x_hat[2]))%360
                 pose_for_planner = ((px_hat, py_hat), theta_hat)
+                print("2", theta_hat)
+                #print(pose_for_planner)
             else:
                 pose_for_planner = pose
             goal = vision.get_goal_pos(frame)
@@ -197,6 +200,7 @@ async def main():
             cv2.imshow("Map", frame)
 
             await asyncio.sleep(Ts)
+            #print(time.perf_counter() - a)
             if cv2.waitKey(1) & 0xFF == ord('q'):
                 break
 

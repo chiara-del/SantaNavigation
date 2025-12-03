@@ -196,7 +196,7 @@ class Vision:
         self.matrix_path = matrix_path
         
         # Setup Camera
-        self.cap = cv2.VideoCapture(camera_index, cv2.CAP_DSHOW)
+        self.cap = cv2.VideoCapture(camera_index)
         if self.cap.isOpened():
             self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, width)
             self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, height)

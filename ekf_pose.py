@@ -1,4 +1,5 @@
 import numpy as np
+from time import perf_counter
 
 class EKFPose:
     # x = [x_mm, y_mm, theta_rad, v_mm_s]
@@ -17,16 +18,19 @@ class EKFPose:
         self.R_pos = np.diag([r_pos_x, r_pos_y])
         self.R_theta = np.array([[r_theta]])
         self.R_v = np.array([[r_v]])
+        self.last_measurement = perf_counter()
 
     # g(u,x): u = [v_meas (mm/s), omega_meas (rad/s)]
     def f(self, x, u):
+        delta_t = perf_counter() - self.last_measurement
+        self.last_measurement = perf_counter()
         Ts = self.Ts
         px, py, th, v = x
         v_meas = float(u[0])
         omega  = float(u[1])
-        pxn = px + v_meas * np.cos(th) * Ts
-        pyn = py + v_meas * np.sin(th) * Ts
-        thn = th + omega * Ts
+        pxn = px + v_meas * np.sin(th) * delta_t
+        pyn = py + v_meas * -np.cos(th) * delta_t
+        thn = th + omega * delta_t
         vn  = v_meas
         return np.array([pxn, pyn, thn, vn])
 
@@ -60,6 +64,7 @@ class EKFPose:
         G = self.G_jacobian(self.x, u)
         Pbar = G @ self.P @ G.T + self.Q
         self.x, self.P = xbar, Pbar
+
 
     def update(self, z, h_fun, H_fun, R):
         zhat = h_fun(self.x)
