@@ -187,13 +187,12 @@ def _draw_all_detections(frame, obstacles=None, thymio_pose=None, goal_pos=None)
 # --- VISION CLASS ---
 
 class Vision:
-    def __init__(self, camera_index, width, height, map_width, map_height, matrix_path, thymio_id, goal_id, min_area=100, robot_radius_px=None):
+    def __init__(self, camera_index, width, height, map_width, map_height, matrix_path, thymio_id, goal_id, min_area=100):
         self.map_width = map_width
         self.map_height = map_height
         self.thymio_id = thymio_id
         self.goal_id = goal_id
         self.min_area = min_area
-        self.robot_radius_px = robot_radius_px
         self.matrix_path = matrix_path
         
         # Setup Camera
@@ -212,9 +211,8 @@ class Vision:
         self.matrix = self._load_or_calibrate()
         
         # Auto-calculate radius if not provided
-        if self.robot_radius_px is None:
-            px_per_cm = float(self.map_width) / 100.0 
-            self.robot_radius_px = 7 * px_per_cm
+        self.px_per_cm = float(self.map_width) / 100.0 
+        self.robot_radius_px = 7 * self.px_per_cm 
 
     def _load_or_calibrate(self):
         try:
@@ -272,3 +270,79 @@ class Vision:
     def release(self):
         if self.cap: self.cap.release()
         cv2.destroyAllWindows()
+
+def draw_covariance_ellipse(frame, P, mm_per_px, scale_factor=3.0):
+    """
+    Draws the XY uncertainty ellipse and Theta uncertainty wedge.
+    """
+    # Multiplier to make small errors visible to the human eye
+    VISUAL_GAIN = 10.0 
+    
+    # Extract 2x2 XY covariance
+    cov_xy = P[0:2, 0:2]
+    
+    # Eigenvalues for ellipse shape
+    vals, vecs = np.linalg.eigh(cov_xy)
+    vals[vals < 0] = 0 # Sanitize negative eigenvalues
+    
+    # Sort descending
+    order = vals.argsort()[::-1]
+    vals = vals[order]
+    vecs = vecs[:, order]
+    
+    # Calculate Angle of the XY error
+    angle = np.degrees(np.arctan2(vecs[1, 0], vecs[0, 0]))
+    
+    # Calculate Axis Lengths (3-sigma * visual_gain)
+    # We apply VISUAL_GAIN here to make it huge enough to see
+    width = 2 * scale_factor * np.sqrt(vals[0]) / mm_per_px * VISUAL_GAIN
+    height = 2 * scale_factor * np.sqrt(vals[1]) / mm_per_px * VISUAL_GAIN
+    
+    # Clamp minimum size so it doesn't vanish
+    width = max(20, width) 
+    height = max(20, height)
+    
+    # Fixed Position (Bottom Left)
+    fixed_center = (200, frame.shape[0] - 200)
+    
+    try:
+        # --- DRAW XY ELLIPSE (Blue) ---
+        # We draw a filled semi-transparent ellipse if possible, but OpenCV
+        cv2.ellipse(frame, fixed_center, (int(width/2), int(height/2)), 
+                    int(angle), 0, 360, (255, 100, 0), 2)
+        
+        # --- DRAW THETA UNCERTAINTY (Yellow Wedge) ---
+        var_theta = P[2, 2]
+        if var_theta < 0: var_theta = 0
+        std_theta = np.sqrt(var_theta)
+        
+        # Calculate angular spread (3-sigma)
+        spread_deg = np.degrees(3 * std_theta)
+        
+        # Limit spread for visualization sanity
+        spread_deg = min(spread_deg, 180)
+        
+        # Arrow Length (proportional to ellipse size or fixed)
+        arrow_len = 100
+        
+        # Draw the "Cone" of uncertainty
+        # We assume "Up" (-90 degrees in OpenCV) is the reference direction
+        start_angle = -90 - spread_deg
+        end_angle = -90 + spread_deg
+        
+        # Draw filled arc section
+        cv2.ellipse(frame, fixed_center, (arrow_len, arrow_len), 0, start_angle, end_angle, (0, 255, 255), -1)
+        
+        # Draw the "Mean" Arrow (Center of the cone)
+        p1 = fixed_center
+        p2 = (fixed_center[0], fixed_center[1] - arrow_len)
+        cv2.arrowedLine(frame, p1, p2, (0, 0, 255), 2, tipLength=0.2)
+
+        # --- LABELS ---
+        cv2.putText(frame, f"EKF Uncertainty (x{int(VISUAL_GAIN)})", (fixed_center[0]-100, fixed_center[1]+120), 
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
+        cv2.putText(frame, f"Theta: +/- {spread_deg:.1f} deg", (fixed_center[0]-80, fixed_center[1]+145), 
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 255), 1)
+
+    except Exception as e:
+        print(f"Viz Error: {e}")

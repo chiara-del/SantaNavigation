@@ -13,18 +13,9 @@ from ekf_pose import EKFPose   # <- classe ci-dessus
 # --- CONFIG ---
 CFG = {
     "CAM": 1, "RES": (1920, 1080), "MAP": (1000, 700), "MTX": "calibration_matrix.npy",
-    "IDS": (0, 1), "AREA": 100, "RAD": 41, "PX_CM": 7.3,
+    "IDS": (0, 1), "AREA": 100,
     "THRESH": (600, 1000), "GAIN": 0.06, "BLIND": 0.5, "KIDNAP": 60
 }
-
-def check_kidnapping(pose, target, path, prev_idx, threshold):
-    if not path:
-        return False
-    p, a, b = np.array(pose[0]), np.array(path[prev_idx]), np.array(target)
-    n = b - a
-    norm_n = np.linalg.norm(n)
-    dist = np.abs(np.cross(n, a - p)) / norm_n if norm_n > 0 else np.linalg.norm(p - a)
-    return dist > threshold
 
 async def main():
     # 1) CONNECT
@@ -45,14 +36,14 @@ async def main():
     follower = cu.PathFollower(speed=100, gain=2.5)
 
     vision = vu.Vision(CFG["CAM"], *CFG["RES"], *CFG["MAP"], CFG["MTX"],
-                       *CFG["IDS"], CFG["AREA"], CFG["RAD"])
+                       *CFG["IDS"], CFG["AREA"])
     if not vision.cap:
         await node.unlock()
         return
 
     # 2) EKF INIT (units: mm, mm/s, rad)
     Ts = 0.01
-    mm_per_px = 10.0 / CFG["PX_CM"]     # mm/px
+    mm_per_px = 10.0/(vision.px_per_cm)   # mm/px 
     ekf = EKFPose(
         Ts=Ts,
         # Q (process): à affiner avec tes estimations converties
@@ -118,7 +109,6 @@ async def main():
                 pose = None
 
             # EKF updates (position + theta)
-            print('pose:', pose)
             if pose:
                 (px, py), angle_deg = pose
                 x_mm = px * mm_per_px
@@ -143,7 +133,6 @@ async def main():
                 pose_for_planner = ((px_hat, py_hat), theta_hat)
             else:
                 pose_for_planner = pose
-            print('pose_for_planner:', pose_for_planner)
             goal = vision.get_goal_pos(frame)
 
             # Planning
@@ -154,7 +143,7 @@ async def main():
                 elif follower.path and state == 0:
                     prev = max(0, follower.current_idx - 1)
                     target = follower.path[follower.current_idx]
-                    if check_kidnapping(pose_for_planner, target, follower.path, prev, CFG["KIDNAP"]):
+                    if pu.check_kidnapping(pose_for_planner, target, follower.path, prev, CFG["KIDNAP"]):
                         print("Kidnapping detected -> Replan")
                         needs_plan = True
 
@@ -191,7 +180,14 @@ async def main():
 
             # Visualization (draw EKF pose in blue)
             vision.draw(frame, obs_contours, pose_for_planner, goal, follower.path, follower.current_idx)
-            status_text = "GLOBAL (EKF u=[v,omega])" if (state == 0) else "LOCAL AVOIDANCE"
+            # Visualization (Draw Uncertainty Ellipse)
+            if seeded:
+                # Get current covariance P from EKF
+                _, P_hat = ekf.get_state()
+                # Draw it (fixed to bottom-left)
+                vu.draw_covariance_ellipse(frame, P_hat, mm_per_px)
+            
+            status_text = "GLOBAL" if (state == 0) else "LOCAL AVOIDANCE"
             color = (0, 255, 0) if state == 0 else (0, 0, 255)
             cv2.putText(frame, status_text, (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 1, color, 2)
             if seeded:
