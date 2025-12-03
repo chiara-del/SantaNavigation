@@ -35,7 +35,6 @@ def _detect_aruco_markers(frame, detector):
             dy = top_mid[1] - bottom_mid[1]
             angle_rad = math.atan2(dx, -dy)
             angle_deg = math.degrees(angle_rad) % 360
-            
             poses[int(marker_id)] = ((int(center_x), int(center_y)), angle_deg)
     return poses
 
@@ -144,7 +143,7 @@ def _detect_obstacles(frame, min_area, robot_radius, thymio_pose=None):
     hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
     
     # Red Thresholds
-    lower_red = np.array([163, 92, 196])
+    lower_red = np.array([166, 87, 220])
     upper_red = np.array([179, 255, 255])
     mask = cv2.inRange(hsv, lower_red, upper_red)
     
@@ -163,7 +162,7 @@ def _detect_obstacles(frame, min_area, robot_radius, thymio_pose=None):
     
     return expanded_polygons, mask_cleaned
 
-def _draw_all_detections(frame, obstacles=None, thymio_pose=None, goal_pos=None):
+def _draw_all_detections(frame, obstacles=None, thymio_pose=None, kalman_pose=None, goal_pos=None):
     """
     Draws all detected elements onto the display frame.
     """
@@ -174,9 +173,11 @@ def _draw_all_detections(frame, obstacles=None, thymio_pose=None, goal_pos=None)
         end_x = int(pos[0] + 30 * math.sin(angle_rad))
         end_y = int(pos[1] - 30 * math.cos(angle_rad))
         cv2.arrowedLine(frame, pos, (end_x, end_y), (0, 255, 255), 2) #Draw yellow arrow to visualize orientation
-        cv2.putText(frame, "Thymio", 
-                    (pos[0] + 15, pos[1]), 
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 255), 1) #Adds text "Thymio"
+    if kalman_pose is not None:
+        cv2.circle(frame, kalman_pose[0], 5, (255, 0, 0), -1)
+        cv2.putText(frame, "EKF", (kalman_pose[0][0]+6, kalman_pose[0][1]-6), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255,0,0), 1)
+
+
     if goal_pos is not None:
         cv2.circle(frame, goal_pos, 15, (255, 0, 0), -1) #blue dot at the goal position
         cv2.putText(frame, "Goal", (goal_pos[0] + 15, goal_pos[1]), 
@@ -188,17 +189,16 @@ def _draw_all_detections(frame, obstacles=None, thymio_pose=None, goal_pos=None)
 # --- VISION CLASS ---
 
 class Vision:
-    def __init__(self, camera_index, width, height, map_width, map_height, matrix_path, thymio_id, goal_id, min_area=100, robot_radius_px=None):
+    def __init__(self, camera_index, width, height, map_width, map_height, matrix_path, thymio_id, goal_id, min_area=100):
         self.map_width = map_width
         self.map_height = map_height
         self.thymio_id = thymio_id
         self.goal_id = goal_id
         self.min_area = min_area
-        self.robot_radius_px = robot_radius_px
         self.matrix_path = matrix_path
         
         # Setup Camera
-        self.cap = cv2.VideoCapture(camera_index, cv2.CAP_DSHOW)
+        self.cap = cv2.VideoCapture(camera_index)
         if self.cap.isOpened():
             self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, width)
             self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, height)
@@ -213,9 +213,8 @@ class Vision:
         self.matrix = self._load_or_calibrate()
         
         # Auto-calculate radius if not provided
-        if self.robot_radius_px is None:
-            px_per_cm = float(self.map_width) / 70.0 
-            self.robot_radius_px = 7 * px_per_cm
+        self.px_per_cm = float(self.map_width) / 100.0 
+        self.robot_radius_px = 7 * self.px_per_cm 
 
     def _load_or_calibrate(self):
         try:
@@ -254,9 +253,9 @@ class Vision:
         pose = self.get_thymio_pose(stable_frame)
         return _detect_obstacles(stable_frame, self.min_area, self.robot_radius_px, pose)
 
-    def draw(self, frame, obstacles=None, pose=None, goal=None, path=None, path_idx=0, state_text=""):
+    def draw(self, frame, obstacles=None, pose=None, kalman_pose = None, goal=None, path=None, path_idx=0, state_text=""):
         # We call the exact function you requested
-        _draw_all_detections(frame, obstacles, pose, goal)
+        _draw_all_detections(frame, obstacles, pose, kalman_pose, goal)
         
         # We add the path drawing here since it wasn't in your snippet
         if path:
@@ -273,3 +272,4 @@ class Vision:
     def release(self):
         if self.cap: self.cap.release()
         cv2.destroyAllWindows()
+

@@ -1,4 +1,5 @@
 from math import hypot  #imports euclidean norm for distance 
+import numpy as np
 import heapq
 
 # ---------- 2D geometry ----------
@@ -74,6 +75,11 @@ def segment_hits_polygon(a, b, poly, safety=0.0): #dire si le segment a–b “t
         if segments_intersect(a, b, p, q, allow_shared_endpoint=allow_endpoint):  #On teste l’intersection entre notre segment et l’arête du polygone. On passe le flag allow_shared_endpoint:True si on partage un sommet → toucher au sommet commun est permis.False sinon → tout contact compte comme intersection.
             if not allow_endpoint:
                 return True
+            
+    mid = ((a[0] + b[0]) / 2.0, (a[1] + b[1]) / 2.0)
+    if point_in_polygon(mid, poly):
+        return True
+
     if safety > 0.0:
         # crude guard: ensure segment midpoint not too close to polygon vertices
         mid = ((a[0]+b[0])/2.0, (a[1]+b[1])/2.0)
@@ -157,7 +163,7 @@ def simplify_collinear(path, eps=1e-3): #removes unnecessary intermediate points
     out.append(path[-1]) #always keep last point=goal 
     return out
 
-# ---------- Public API ----------
+# ---------- Public ----------
 def plan_path(start, goal, grown_polygons, safety=0.02):
     """
     start: (x,y) in meters
@@ -171,3 +177,13 @@ def plan_path(start, goal, grown_polygons, safety=0.02):
     if path is None:
         return None, float('inf')
     return simplify_collinear(path), L
+
+
+def check_kidnapping(pose, target, path, prev_idx, threshold):
+    if not path:
+        return False
+    p, a, b = np.array(pose[0]), np.array(path[prev_idx]), np.array(target)
+    n = b - a
+    norm_n = np.linalg.norm(n)
+    dist = np.abs(np.cross(n, a - p)) / norm_n if norm_n > 0 else np.linalg.norm(p - a)
+    return dist > threshold
