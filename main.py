@@ -43,7 +43,7 @@ async def main():
 
     #3) EKF initialization (units: mm, mm/s, rad)
     mm_per_px = 10.0/(vision.px_per_cm)   # mm/px 
-    ekf = EKFPose()
+    ekf = EKFPose(save_data = True)
     seeded = False
 
     # Speed conversions
@@ -158,6 +158,7 @@ async def main():
                     if done:
                         print("Goal reached!")
                         follower.path = None
+                        ekf.stop_save()
                     await robot.set_motors(l, r)
                 else:
                     l, r = cu.calculate_avoidance_commands(prox, 50, 1.8)

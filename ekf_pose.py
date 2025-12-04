@@ -1,6 +1,7 @@
 import cv2
 import numpy as np
 from time import perf_counter
+import matplotlib.pyplot as plt
 
 Q_X=0.25
 Q_Y=0.25
@@ -18,14 +19,21 @@ class EKFPose:
                  q_x=Q_X, q_y=Q_Y, q_theta=Q_TH,
                  # R (measure): mm^2, rad^2
                  r_pos_x=R_POSX, r_pos_y=R_POSY,
-                 r_theta=R_TH
+                 r_theta=R_TH,
+                 save_data = False
                 ):
         self.x = np.array([0.0, 0.0, 0.0]) if x0 is None else np.array(x0, float)
         self.P = np.diag([1e4, 1e4, 1.0]) if P0 is None else np.array(P0, float)
         self.Q = np.diag([q_x, q_y, q_theta])
         self.R_pos = np.diag([r_pos_x, r_pos_y])
         self.R_theta = np.array([[r_theta]])
+        self.start_time = perf_counter()
         self.last_measurement = perf_counter()
+        self.save_data = save_data
+        if save_data:
+            self.x_predicted = []
+            self.x_variance = []
+            self.data_time = []
 
     # g(u,x): u = [v_meas (mm/s), omega_meas (rad/s)]
     def f(self, x, u, delta_t):
@@ -67,6 +75,10 @@ class EKFPose:
         G = self.G_jacobian(self.x, u, delta_t)
         Pbar = G @ self.P @ G.T + self.Q
         self.x, self.P = xbar, Pbar
+        if self.save_data:
+            self.x_predicted.append(self.x[0])
+            self.x_variance.append(self.P[0,0])
+            self.data_time.append(self.last_measurement - self.start_time)
 
 
     def update(self, z, h_fun, H_fun, R):
@@ -87,6 +99,15 @@ class EKFPose:
 
     def get_state(self):
         return self.x.copy(), self.P.copy()
+
+    # Data saving
+    def stop_save(self):
+        time = np.array(self.data_time)[20:]
+        predicted = np.array(self.x_predicted)[20:]
+        variance  = np.array(self.x_variance)[20:]
+        plt.plot(time, predicted, 'b-', label='x_odometric')
+        plt.fill_between(time, predicted - variance, predicted + variance, color='blue', alpha=0.2)
+        plt.show()
 
     # Kalman Visualization
     def draw_covariance_ellipse(self, frame, mm_per_px, scale_factor=3.0):
