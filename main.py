@@ -13,7 +13,7 @@ from ekf_pose import EKFPose   # <- classe ci-dessus
 CFG = {
     "CAM": 0, "RES": (1920, 1080), "MAP": (1000, 700), "MTX": "calibration_matrix.npy",
     "IDS": (0, 1), "AREA": 100,
-    "THRESH": (600, 1000), "GAIN": 0.06, "BLIND": 0.5, "KIDNAP": 10
+    "THRESH": (600, 1000), "GAIN": 0.06, "BLIND": 0.5, "KIDNAP": 60
 }
 
 async def main():
@@ -43,7 +43,7 @@ async def main():
 
     #3) EKF initialization (units: mm, mm/s, rad)
     mm_per_px = 10.0/(vision.px_per_cm)   # mm/px 
-    ekf = EKFPose(save_data = True)
+    ekf = EKFPose()
     seeded = False
 
     # Speed conversions
@@ -119,7 +119,7 @@ async def main():
             #Get Goal Position from vision
             goal = vision.get_goal_pos(frame)
 
-                        # State machine (local avoidance)
+            # State machine (local avoidance)
             max_prox = max(prox[:5])
             if state == 0 and max_prox > CFG["THRESH"][1]:
                 state = 1
@@ -158,7 +158,6 @@ async def main():
                     if done:
                         print("Goal reached!")
                         follower.path = None
-                        ekf.stop_save()
                     await robot.set_motors(l, r)
                 else:
                     l, r = cu.calculate_avoidance_commands(prox, 50, 1.8)
