@@ -13,7 +13,7 @@ from ekf_pose import EKFPose   # <- classe ci-dessus
 CFG = {
     "CAM": 0, "RES": (1920, 1080), "MAP": (1000, 700), "MTX": "calibration_matrix.npy",
     "IDS": (0, 1), "AREA": 100,
-    "THRESH": (600, 1000), "GAIN": 0.06, "BLIND": 0.5, "KIDNAP": 60
+    "THRESH": (600, 1000), "GAIN": 0.06, "BLIND": 0.5, "KIDNAP": 10
 }
 
 async def main():
@@ -42,21 +42,12 @@ async def main():
         return
 
     #3) EKF initialization (units: mm, mm/s, rad)
-    Ts = 0.01
     mm_per_px = 10.0/(vision.px_per_cm)   # mm/px 
-    ekf = EKFPose(
-        Ts=Ts,
-        # Q (process): à affiner avec tes estimations converties
-        q_x=0.2, q_y=0.2, q_theta=2.752e-03 , q_v=53.604 ,
-        # R (measure): idem
-        r_pos_x=0.00001, r_pos_y=0.00001,                # mm^2
-        r_theta=2.229e-06,                # rad^2
-        r_v=156.739                                  # (mm/s)^2
-    )
+    ekf = EKFPose()
     seeded = False
 
     # Speed conversions
-    SPEED_TO_MMS = 0.43478260869565216   # mm/s per Thymio unit (Ex. 8)
+    SPEED_TO_MMS = 0.33 #mm/s per Thymio unit
     b_mm = 95.0                          # track width (mm) à mesurer
     omega_scale = SPEED_TO_MMS / b_mm    # rad/s per (Thymio unit)
 
@@ -83,7 +74,6 @@ async def main():
 
     try:
         while True:
-            a = time.perf_counter()
             frame = vision.get_warped_frame()
             if frame is None:
                 break
@@ -110,7 +100,7 @@ async def main():
                 theta_rad = math.radians(angle_deg)
             
                 if not seeded:
-                    ekf.x[:] = [x_mm, y_mm, theta_rad, v_meas]
+                    ekf.x[:] = [x_mm, y_mm, theta_rad]
                     seeded = True
 
                 ekf.update_pos(x_mm, y_mm)
@@ -118,7 +108,7 @@ async def main():
 
             # Planner/control pose (convert back to pixels)
             if seeded:
-                x_hat, P_hat = ekf.get_state()
+                x_hat, _ = ekf.get_state()
                 px_hat = int(x_hat[0] / mm_per_px)
                 py_hat = int(x_hat[1] / mm_per_px)
                 theta_hat = (math.degrees(x_hat[2]))%360
@@ -128,6 +118,14 @@ async def main():
 
             #Get Goal Position from vision
             goal = vision.get_goal_pos(frame)
+
+                        # State machine (local avoidance)
+            max_prox = max(prox[:5])
+            if state == 0 and max_prox > CFG["THRESH"][1]:
+                state = 1
+            elif state == 1 and max_prox < CFG["THRESH"][0]:
+                state = 0
+                follower.path = None
 
             # Planning
             if pose_for_planner and goal:
@@ -151,12 +149,7 @@ async def main():
                     else:
                         print("No Path.")
 
-            # State machine (local avoidance)
-            max_prox = max(prox[:5])
-            if state == 0 and max_prox > CFG["THRESH"][1]:
-                state = 1
-            elif state == 1 and max_prox < CFG["THRESH"][0]:
-                state = 0
+
 
             # Control
             if pose_for_planner:
@@ -167,7 +160,7 @@ async def main():
                         follower.path = None
                     await robot.set_motors(l, r)
                 else:
-                    l, r = cu.calculate_avoidance_commands(prox, 50, 2.0)
+                    l, r = cu.calculate_avoidance_commands(prox, 50, 1.8)
                     await robot.set_motors(l, r)
             else:
                 await robot.stop()
@@ -195,7 +188,7 @@ async def main():
             cv2.imshow("KalmanVariance", kalman_var)
 
 
-            await asyncio.sleep(Ts)
+            await asyncio.sleep(0.01)
             if cv2.waitKey(1) & 0xFF == ord('q'):
                 break
 

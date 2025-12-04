@@ -177,7 +177,6 @@ def _draw_all_detections(frame, obstacles=None, thymio_pose=None, kalman_pose=No
         cv2.circle(frame, kalman_pose[0], 5, (255, 0, 0), -1)
         cv2.putText(frame, "EKF", (kalman_pose[0][0]+6, kalman_pose[0][1]-6), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255,0,0), 1)
 
-
     if goal_pos is not None:
         cv2.circle(frame, goal_pos, 15, (255, 0, 0), -1) #blue dot at the goal position
         cv2.putText(frame, "Goal", (goal_pos[0] + 15, goal_pos[1]), 
