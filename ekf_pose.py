@@ -2,8 +2,8 @@ import cv2
 import numpy as np
 from time import perf_counter
 
-Q_X=0.25 #0.5
-Q_Y=0.25 #0.5
+Q_X=0.25
+Q_Y=0.25
 Q_TH=2.752e-03
 R_POSX=0.00001
 R_POSY=0.00001
