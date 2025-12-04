@@ -2,6 +2,7 @@ import cv2
 import numpy as np
 import math
 import sys
+import os
 from shapely.geometry import Polygon
 from shapely.ops import unary_union
 from shapely.geometry import JOIN_STYLE
@@ -38,7 +39,7 @@ def _detect_aruco_markers(frame, detector):
             poses[int(marker_id)] = ((int(center_x), int(center_y)), angle_deg)
     return poses
 
-def _perspective_calibration(cap, detector, map_width, map_height, matrix_file_path):
+def _perspective_calibration(cap, detector, map_width, map_height, matrix_file_path, test_frame = None):
     """
     Automated calibration using 4 corner markers.
     """
@@ -47,8 +48,11 @@ def _perspective_calibration(cap, detector, map_width, map_height, matrix_file_p
     print("Press 's' to capture.")
 
     while True:
-        ret, frame = cap.read()
-        if not ret: return None
+        if test_frame is None:
+            ret, frame = cap.read()
+            if not ret: return None
+        else:
+            frame = test_frame
 
         preview = frame.copy()
         arucos = _detect_aruco_markers(preview, detector)
@@ -100,8 +104,8 @@ def _perspective_calibration(cap, detector, map_width, map_height, matrix_file_p
 
 def _mask_to_polygons(mask, min_area=100, epsilon_factor=0.01):
     """Converts a binary mask into a list of polygon coordinates."""
-    _, th = cv2.threshold(mask, 127, 255, cv2.THRESH_BINARY)
-    contours, _ = cv2.findContours(th, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    #_, th = cv2.threshold(mask, 127, 255, cv2.THRESH_BINARY)
+    contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
     polygons = []
     
     for cnt in contours:
@@ -140,7 +144,8 @@ def _expand_and_merge_polygons(polygons_list, radius_px):
 
 def _detect_obstacles(frame, min_area, robot_radius, thymio_pose=None):
     """Detects obstacles (red/orange) and expands them."""
-    hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
+    blurred = cv2.GaussianBlur(frame, (9, 9), 0)
+    hsv = cv2.cvtColor(blurred, cv2.COLOR_BGR2HSV)
     
     # Red Thresholds
     lower_red = np.array([166, 87, 220])
@@ -188,13 +193,14 @@ def _draw_all_detections(frame, obstacles=None, thymio_pose=None, kalman_pose=No
 # --- VISION CLASS ---
 
 class Vision:
-    def __init__(self, camera_index, width, height, map_width, map_height, matrix_path, thymio_id, goal_id, min_area=100):
+    def __init__(self, camera_index, width, height, map_width, map_height, matrix_path, thymio_id, goal_id, min_area=100, test_frame = None):
         self.map_width = map_width
         self.map_height = map_height
         self.thymio_id = thymio_id
         self.goal_id = goal_id
         self.min_area = min_area
         self.matrix_path = matrix_path
+        self.test_frame = test_frame
         
         # Setup Camera
         self.cap = cv2.VideoCapture(camera_index)
@@ -215,17 +221,25 @@ class Vision:
         self.px_per_cm = float(self.map_width) / 100.0 
         self.robot_radius_px = 7 * self.px_per_cm 
 
+    def delete_matrix(self):
+        self.matrix = None
+        os.remove(self.matrix_path)
+
     def _load_or_calibrate(self):
         try:
             return np.load(self.matrix_path)
         except FileNotFoundError:
             print("Calibration Matrix not found.")
             if self.cap is None: return None
-            return _perspective_calibration(self.cap, self.detector, self.map_width, self.map_height, self.matrix_path)
+            return _perspective_calibration(self.cap, self.detector, self.map_width, self.map_height, self.matrix_path, self.test_frame)
 
-    def get_warped_frame(self):
-        ret, frame = self.cap.read()
-        if not ret: return None
+    def get_raw_frame(self):
+        _, frame = self.cap.read()
+        return frame
+
+    def get_warped_frame(self, frame = None):
+        if frame is None:
+            _, frame = self.cap.read()
         return cv2.warpPerspective(frame, self.matrix, (self.map_width, self.map_height))
 
     def detect_aruco_raw(self, frame):
@@ -238,22 +252,26 @@ class Vision:
         pos = self.detect_aruco_raw(frame).get(self.goal_id)
         return pos[0] if pos else None
 
-    def detect_obstacles(self):
+    def detect_obstacles(self, frame = None):
         """Public method to capture stable frame and run detection."""
-        # Warmup
-        frames = []
-        for _ in range(50):
-            f = self.get_warped_frame()
-            if f is not None: frames.append(f)
-        
-        if not frames: return [], None
-        stable_frame = np.median(np.stack(frames), axis=0).astype(np.uint8)
-        
+        if frame is None:
+            # Warmup
+            frames = []
+            for _ in range(50):
+                f = self.get_warped_frame()
+                if f is not None: frames.append(f)
+            
+            if not frames: return [], None
+            stable_frame = np.median(np.stack(frames), axis=0).astype(np.uint8)
+        else:
+            stable_frame = frame
         pose = self.get_thymio_pose(stable_frame)
         return _detect_obstacles(stable_frame, self.min_area, self.robot_radius_px, pose)
 
     def draw(self, frame, obstacles=None, pose=None, kalman_pose = None, goal=None, path=None, path_idx=0, state_text=""):
         # We call the exact function you requested
+        if not obstacles:
+            obstacles = None
         _draw_all_detections(frame, obstacles, pose, kalman_pose, goal)
         
         # We add the path drawing here since it wasn't in your snippet
